@@ -880,7 +880,7 @@ tbody td:first-child{text-align:left;color:var(--muted2)}
       <div class="icon">📦</div>
       Carregue os backtests para ver os setups disponíveis
     </div>
-    <div id="anlSetupList" style="display:none;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-bottom:20px;max-height:420px;overflow-y:auto"></div>
+    <div id="anlSetupList" style="display:none;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-bottom:20px;max-height:420px;overflow-y:auto"></div>
 
     <!-- Resultado da análise -->
     <div id="anlContent" style="display:none">
@@ -1488,7 +1488,9 @@ async function analyzeAll() {
   renderRanking();
   renderScatterCharts();
   anlRefreshList();   // ← atualiza lista da aba Analisar
-  goTab('ranking');
+  // Só navega para ranking se não veio da aba Analisar
+  if (!S._fromAnalisar) goTab('ranking');
+  S._fromAnalisar = false;
 }
 
 // ── RANKING ──────────────────────────────────────────────
@@ -2978,53 +2980,20 @@ function renderSmartTBot(group) {
     }
   });
 
-// ── ZIP LOADER DA ABA ANALISAR (independente) ──────────────
+// ── ZIP LOADER DA ABA ANALISAR (usa mesmo handleFiles da aba Carregar) ──
 $('anlZipInput').addEventListener('change', async e => {
-  const file = e.target.files[0];
-  if (!file) return;
+  const files = [...e.target.files];
+  if (!files.length) return;
   const status = $('anlLoadStatus');
-  status.textContent = '⏳ Carregando...';
+  status.textContent = '⏳ Processando...';
   status.style.color = 'var(--muted2)';
-  try {
-    const buf = await file.arrayBuffer();
-    const zip = await JSZip.loadAsync(buf);
-    const jsons = [];
-    const promises = [];
-    zip.forEach((path, entry) => {
-      if (!entry.dir && path.endsWith('.json') && !path.includes('__MACOSX')) {
-        promises.push(entry.async('string').then(txt => {
-          try {
-            const d = JSON.parse(txt);
-            if (d.orders) jsons.push({ name: path.replace(/.*\//, '').replace('_BT.json','').replace('.json',''), data: d });
-          } catch(e) {}
-        }));
-      }
-    });
-    await Promise.all(promises);
-    if (!jsons.length) { status.textContent = '⚠ Nenhum backtest encontrado no ZIP.'; status.style.color='var(--r)'; return; }
-
-    // Processar setups
-    const loaded = [];
-    for (const { name, data } of jsons) {
-      try {
-        const { monthly, daily, wins, total, avgWin, avgLoss, profitFactor } = parseOrders(data);
-        const m = computeMetrics(name, monthly, daily, wins, total, avgWin, avgLoss, profitFactor);
-        if (m) { m.score = scoreMetric(m); loaded.push(m); }
-      } catch(e) {}
-    }
-    loaded.sort((a,b) => b.score - a.score);
-
-    // Merge com S.setups (adiciona sem duplicar)
-    loaded.forEach(m => { if (!S.setups.find(s=>s.name===m.name)) S.setups.push(m); });
-    S.setups.sort((a,b) => b.score - a.score);
-
-    status.textContent = `✓ ${loaded.length} setups carregados`;
-    status.style.color = 'var(--g)';
-    anlRefreshList();
-  } catch(err) {
-    status.textContent = '⚠ Erro ao carregar: ' + err.message;
-    status.style.color = 'var(--r)';
-  }
+  // Usa o mesmo handleFiles que já funciona na aba Carregar
+  await handleFiles(files);
+  // Após processar, analisa e popula a lista sem sair da aba
+  S._fromAnalisar = true;
+  await analyzeAll();
+  status.textContent = `✓ ${S.setups.length} setups carregados`;
+  status.style.color = 'var(--g)';
   e.target.value = '';
 });
 
