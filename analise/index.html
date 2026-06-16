@@ -828,8 +828,19 @@ tbody td:first-child{text-align:left;color:var(--muted2)}
     <div class="sec-hd">
       <h2>Analisar Carteira Existente</h2>
       <p style="font-size:12px;color:var(--muted2);margin:0">
-        Selecione até 4 setups dos backtests carregados e clique em Analisar.
+        Selecione até 4 setups e clique em Analisar.
       </p>
+    </div>
+
+    <!-- Carregar ZIP diretamente aqui -->
+    <div id="anlLoadArea" style="margin-bottom:16px;padding:14px 16px;background:var(--s1);border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <label for="anlZipInput" class="btn btn-g" style="cursor:pointer;font-size:12px">
+        📦 Carregar ZIP de Backtests
+      </label>
+      <input type="file" id="anlZipInput" accept=".zip" style="display:none">
+      <span id="anlLoadStatus" style="font-size:11px;color:var(--muted2)">
+        Carregue o ZIP para ver os setups disponíveis
+      </span>
     </div>
 
     <!-- Barra de seleção -->
@@ -2966,6 +2977,56 @@ function renderSmartTBot(group) {
       }
     }
   });
+
+// ── ZIP LOADER DA ABA ANALISAR (independente) ──────────────
+$('anlZipInput').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const status = $('anlLoadStatus');
+  status.textContent = '⏳ Carregando...';
+  status.style.color = 'var(--muted2)';
+  try {
+    const buf = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(buf);
+    const jsons = [];
+    const promises = [];
+    zip.forEach((path, entry) => {
+      if (!entry.dir && path.endsWith('.json') && !path.includes('__MACOSX')) {
+        promises.push(entry.async('string').then(txt => {
+          try {
+            const d = JSON.parse(txt);
+            if (d.orders) jsons.push({ name: path.replace(/.*\//, '').replace('_BT.json','').replace('.json',''), data: d });
+          } catch(e) {}
+        }));
+      }
+    });
+    await Promise.all(promises);
+    if (!jsons.length) { status.textContent = '⚠ Nenhum backtest encontrado no ZIP.'; status.style.color='var(--r)'; return; }
+
+    // Processar setups
+    const loaded = [];
+    for (const { name, data } of jsons) {
+      try {
+        const { monthly, daily, wins, total, avgWin, avgLoss, profitFactor } = parseOrders(data);
+        const m = computeMetrics(name, monthly, daily, wins, total, avgWin, avgLoss, profitFactor);
+        if (m) { m.score = scoreMetric(m); loaded.push(m); }
+      } catch(e) {}
+    }
+    loaded.sort((a,b) => b.score - a.score);
+
+    // Merge com S.setups (adiciona sem duplicar)
+    loaded.forEach(m => { if (!S.setups.find(s=>s.name===m.name)) S.setups.push(m); });
+    S.setups.sort((a,b) => b.score - a.score);
+
+    status.textContent = `✓ ${loaded.length} setups carregados`;
+    status.style.color = 'var(--g)';
+    anlRefreshList();
+  } catch(err) {
+    status.textContent = '⚠ Erro ao carregar: ' + err.message;
+    status.style.color = 'var(--r)';
+  }
+  e.target.value = '';
+});
 
 // ══════════════════════════════════════════════════════
 // PAGE 8 — ANALISAR CARTEIRA (seleção por clique)
