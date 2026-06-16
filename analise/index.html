@@ -1085,6 +1085,8 @@ async function handleFiles(files) {
   if (n > 0) {
     $('analyzeBtn').style.display = 'inline-flex';
     setStatus(`${n} backtest(s) prontos para análise`, 'ok');
+    // Auto-analisa sem precisar clicar no botão
+    setTimeout(analyzeAll, 300);
   } else {
     setStatus('Nenhum backtest encontrado — verifique o arquivo', 'err');
     addRow(list, '⚠ Nenhum JSON de backtest encontrado', 'file-warn',
