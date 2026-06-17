@@ -304,6 +304,100 @@ nav{
 .value-label{font-family:'Inter',sans-serif;font-size:14px;font-weight:700;margin-bottom:4px}
 .value-desc{font-size:13px;color:var(--txt2);line-height:1.5}
 
+/* ══ PLANOS ══════════════════════════════════════════ */
+.plans-compare{
+  display:grid;grid-template-columns:1fr 1fr;gap:24px;
+  margin-top:56px;align-items:start;
+}
+.plans-without{
+  background:var(--card2);border:1px solid var(--brd);
+  border-radius:16px;overflow:hidden;
+}
+.plans-without-header{
+  background:#1a2a40;padding:20px 24px;
+  border-bottom:1px solid var(--brd);
+}
+.plans-without-title{font-size:13px;font-weight:600;color:var(--txt3);margin-bottom:4px}
+.plans-without-sub{font-size:11px;color:var(--txt3);opacity:.7}
+.plans-without-row{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:14px 24px;border-bottom:1px solid var(--brd);
+  font-size:13px;
+}
+.plans-without-row:last-child{border:none}
+.plans-without-strats{color:var(--txt2)}
+.plans-without-price{font-family:'JetBrains Mono',monospace;font-weight:700;color:#ff6b6b;font-size:14px}
+
+.plans-with{
+  background:linear-gradient(135deg,#0a3d2e,#0d4f3a);
+  border:2px solid var(--teal);border-radius:16px;overflow:hidden;
+  position:relative;
+}
+.plans-with-badge{
+  position:absolute;top:16px;right:16px;
+  background:var(--teal);color:#0B1426;
+  font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
+  padding:4px 10px;border-radius:20px;
+}
+.plans-with-header{
+  padding:24px 24px 20px;border-bottom:1px solid rgba(0,212,170,.2);
+}
+.plans-with-title{
+  font-size:18px;font-weight:800;color:#fff;margin-bottom:4px;
+  display:flex;align-items:center;gap:8px;
+}
+.plans-with-sub{font-size:12px;color:rgba(255,255,255,.6);margin-bottom:16px}
+.plans-with-discount{
+  display:inline-flex;align-items:center;gap:6px;
+  background:rgba(0,212,170,.15);border:1px solid rgba(0,212,170,.3);
+  color:var(--teal);font-size:11px;font-weight:700;
+  padding:4px 12px;border-radius:20px;
+}
+.plans-with-rows{padding:8px 0}
+.plans-with-row{
+  display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:center;
+  padding:14px 24px;border-bottom:1px solid rgba(0,212,170,.1);
+}
+.plans-with-row:last-child{border:none}
+.plans-with-contracts{font-size:13px;color:rgba(255,255,255,.8);font-weight:500}
+.plans-with-old{
+  font-family:'JetBrains Mono',monospace;font-size:11px;
+  color:rgba(255,255,255,.35);text-decoration:line-through;
+}
+.plans-with-new{
+  font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:800;
+  color:var(--teal);
+}
+.plans-with-footer{
+  padding:20px 24px;border-top:1px solid rgba(0,212,170,.2);
+  background:rgba(0,212,170,.05);
+}
+.plans-with-includes{
+  font-size:12px;color:rgba(255,255,255,.7);margin-bottom:16px;line-height:1.6;
+}
+.plans-with-includes li{
+  display:flex;align-items:center;gap:6px;margin-bottom:6px;list-style:none;
+}
+.plans-with-includes li::before{content:'✓';color:var(--teal);font-weight:700}
+.btn-plans{
+  width:100%;padding:14px;border:none;border-radius:10px;
+  background:var(--teal);color:#0B1426;
+  font-family:'Inter',sans-serif;font-size:14px;font-weight:800;
+  cursor:pointer;transition:all .2s;letter-spacing:-.01em;
+}
+.btn-plans:hover{background:#00bfa0;transform:translateY(-1px);box-shadow:0 4px 20px rgba(0,212,170,.4)}
+
+.plans-arrow{
+  display:flex;align-items:center;justify-content:center;
+  font-size:32px;color:var(--teal);
+  padding-top:60px;
+}
+
+@media(max-width:768px){
+  .plans-compare{grid-template-columns:1fr}
+  .plans-arrow{transform:rotate(90deg);padding:0}
+}
+
 /* ══ PARCEIROS ══════════════════════════════════════ */
 .partners-strip{
   display:flex;align-items:center;justify-content:center;
@@ -384,6 +478,7 @@ footer{
   <div class="nav-links">
     <a href="#como-funciona">Como Funciona</a>
     <a href="#portfolios">Portfólios</a>
+    <a href="#planos">Planos</a>
     <a href="#sobre">A Empresa</a>
     <a href="#parceiros">Parceiros</a>
     <a href="https://dashboard.cloudtrading.com.br" target="_blank">Dashboard</a>
@@ -704,6 +799,109 @@ footer{
   </div>
 </section>
 
+<!-- ═══════════════════════ PLANOS ════════════════════ -->
+<section class="section section-alt" id="planos">
+  <div class="container">
+    <div class="eyebrow">Cloud Play Anual</div>
+    <h2 class="section-title">Uma assinatura.<br>Todas as estratégias.</h2>
+    <p class="section-sub">Com o plano Cloud Play Anual você acessa todas as estratégias Cloud Trading com 30% de desconto — muito mais vantajoso do que assinar estratégia por estratégia.</p>
+
+    <!-- Comparativo -->
+    <div style="display:grid;grid-template-columns:1fr 60px 1fr;gap:0;align-items:start;margin-top:56px">
+
+      <!-- SEM O PLANO -->
+      <div class="plans-without">
+        <div class="plans-without-header">
+          <div class="plans-without-title">❌ Sem o Cloud Play</div>
+          <div class="plans-without-sub">Assinando estratégia por estratégia</div>
+        </div>
+        <div class="plans-without-row">
+          <span class="plans-without-strats">Carteira com 2 estratégias<br><span style="font-size:11px;opacity:.6">ex: 2 robôs × R$185/mês</span></span>
+          <span class="plans-without-price">R$370/mês</span>
+        </div>
+        <div class="plans-without-row">
+          <span class="plans-without-strats">Carteira com 3 estratégias<br><span style="font-size:11px;opacity:.6">ex: 3 robôs × R$297/mês</span></span>
+          <span class="plans-without-price">R$891/mês</span>
+        </div>
+        <div class="plans-without-row">
+          <span class="plans-without-strats">Carteira completa<br><span style="font-size:11px;opacity:.6">ex: 3 robôs premium × R$497/mês</span></span>
+          <span class="plans-without-price">R$1.491/mês</span>
+        </div>
+        <div class="plans-without-row">
+          <span class="plans-without-strats">Portfólio avançado<br><span style="font-size:11px;opacity:.6">ex: robôs até 100 contratos</span></span>
+          <span class="plans-without-price">R$1.934/mês</span>
+        </div>
+        <div style="padding:16px 24px;background:rgba(255,107,107,.05);border-top:1px solid var(--brd)">
+          <div style="font-size:11px;color:#ff6b6b;font-weight:600">⚠️ Acesso limitado a estratégias avulsas</div>
+          <div style="font-size:11px;color:var(--txt3);margin-top:3px">Cada nova estratégia = novo custo mensal</div>
+        </div>
+      </div>
+
+      <!-- SETA -->
+      <div class="plans-arrow">→</div>
+
+      <!-- COM O PLANO -->
+      <div class="plans-with">
+        <div class="plans-with-badge">MELHOR OPÇÃO</div>
+        <div class="plans-with-header">
+          <div class="plans-with-title">☁️ Cloud Play Anual</div>
+          <div class="plans-with-sub">Acesso a TODAS as estratégias Cloud Trading · 30% OFF</div>
+          <div class="plans-with-discount">🏷️ Cupom: CLOUD-PLAY-ANUAL</div>
+        </div>
+        <div class="plans-with-rows">
+          <div class="plans-with-row">
+            <span class="plans-with-contracts">Até 10 contratos</span>
+            <span class="plans-with-old">R$3.588/ano</span>
+            <span class="plans-with-new">R$209/mês</span>
+          </div>
+          <div class="plans-with-row">
+            <span class="plans-with-contracts">Até 20 contratos</span>
+            <span class="plans-with-old">R$5.388/ano</span>
+            <span class="plans-with-new">R$314/mês</span>
+          </div>
+          <div class="plans-with-row">
+            <span class="plans-with-contracts">Até 30 contratos</span>
+            <span class="plans-with-old">R$7.188/ano</span>
+            <span class="plans-with-new">R$419/mês</span>
+          </div>
+          <div class="plans-with-row">
+            <span class="plans-with-contracts">Até 100 contratos</span>
+            <span class="plans-with-old">R$9.588/ano</span>
+            <span class="plans-with-new">R$559/mês</span>
+          </div>
+        </div>
+        <div class="plans-with-footer">
+          <ul class="plans-with-includes">
+            <li>Acesso a todas as estratégias Cloud Trading</li>
+            <li>Portfólios Conservador, Moderado e Agressivo</li>
+            <li>Dashboard exclusivo com resultados em tempo real</li>
+            <li>Suporte no grupo Telegram</li>
+            <li>30% de desconto vs assinaturas avulsas</li>
+            <li>Pagamento anual em até 12x no cartão</li>
+          </ul>
+          <a href="https://link.smarttbot.com/cloud-play-anual" target="_blank">
+            <button class="btn-plans">🚀 Assinar Cloud Play Anual</button>
+          </a>
+          <p style="text-align:center;font-size:11px;color:rgba(255,255,255,.4);margin-top:10px">
+            Cobrado anualmente · Cancele a qualquer momento
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Nota de rodapé -->
+    <div style="margin-top:32px;padding:20px 24px;background:var(--card2);border:1px solid var(--brd);border-radius:12px;display:flex;gap:16px;align-items:flex-start">
+      <span style="font-size:22px">💡</span>
+      <div>
+        <div style="font-size:14px;font-weight:600;margin-bottom:4px">Por que o Cloud Play Anual vale a pena?</div>
+        <div style="font-size:13px;color:var(--txt2);line-height:1.6">
+          Se você usar apenas 2 estratégias das carteiras recomendadas já paga o plano completo. Com o Cloud Play você tem acesso a todas as 40+ estratégias Cloud, pode montar qualquer portfólio e ainda economiza mês a mês. Quanto mais contratos você operar, maior o benefício.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ═══════════════════════ PARCEIROS ═════════════════ -->
 <section class="section" id="parceiros">
   <div class="container" style="text-align:center">
@@ -744,10 +942,11 @@ footer{
   <div class="footer-links">
     <a href="#como-funciona">Como Funciona</a>
     <a href="#portfolios">Portfólios</a>
+    <a href="#planos">Planos</a>
     <a href="#sobre">A Empresa</a>
     <a href="https://dashboard.cloudtrading.com.br" target="_blank">Dashboard</a>
     <a href="https://t.me/cloudtradingchat" target="_blank">Telegram</a>
-    <a href="https://app.smarttbot.com/smarttstore/detalhes/6000" target="_blank">Smarttbot</a>
+    <a href="https://link.smarttbot.com/cloud-play-anual" target="_blank">Cloud Play Anual</a>
   </div>
   <p class="footer-disc">
     ⚠️ Performance passada não garante resultados futuros. As estratégias operam em ambiente simulado (pessimista) na plataforma Smarttbot. Investimentos em renda variável envolvem riscos. Leia o disclaimer completo antes de assinar.
