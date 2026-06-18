@@ -32,7 +32,7 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 .drop-icon{font-size:48px;margin-bottom:16px;display:block}
 .drop-title{font-size:18px;font-weight:700;color:var(--text);margin-bottom:8px}
 .drop-hint{font-size:13px;color:var(--muted2)}
-.drop-zone input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer}
+.drop-zone input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;pointer-events:none}
 .format-tag{display:inline-block;margin-top:24px;font-size:11px;font-weight:700;letter-spacing:1px;background:var(--surface2);color:var(--accent);padding:4px 14px;border-radius:20px}
 .example-badge{margin-top:16px;font-size:12px;color:var(--muted2)}
 
@@ -472,17 +472,47 @@ Chart.defaults.font.size=12;
 // ══════════════════════ UPLOAD LOGIC ══════════════════════
 const dropZone=document.getElementById('dropZone');
 const fileInput=document.getElementById('fileInput');
-dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('drag')});
-dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('drag'));
-dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('drag');if(e.dataTransfer.files[0])processFile(e.dataTransfer.files[0])});
-fileInput.addEventListener('change',e=>{if(e.target.files[0])processFile(e.target.files[0])});
+
+// Click anywhere on dropZone opens file picker
+dropZone.addEventListener('click',()=>fileInput.click());
+
+// Drag & drop on dropZone
+dropZone.addEventListener('dragover',e=>{e.preventDefault();e.stopPropagation();dropZone.classList.add('drag')});
+dropZone.addEventListener('dragleave',e=>{e.preventDefault();dropZone.classList.remove('drag')});
+dropZone.addEventListener('drop',e=>{
+  e.preventDefault();e.stopPropagation();
+  dropZone.classList.remove('drag');
+  const f=e.dataTransfer.files[0];
+  if(f)processFile(f);
+});
+
+// Also listen at document level to catch any missed drops
+document.addEventListener('dragover',e=>e.preventDefault());
+document.addEventListener('drop',e=>{
+  e.preventDefault();
+  const f=e.dataTransfer.files[0];
+  if(f&&document.getElementById('uploadScreen').style.display!=='none')processFile(f);
+});
+
+// File input change (fallback)
+fileInput.addEventListener('change',e=>{
+  const f=e.target.files[0];
+  if(f)processFile(f);
+  fileInput.value=''; // reset so same file can be re-selected
+});
 
 function resetApp(){
   document.getElementById('uploadScreen').style.display='flex';
   document.getElementById('dashboard').style.display='none';
-  fileInput.value='';
+  document.getElementById('loadingScreen').style.display='none';
+  try{fileInput.value='';}catch(e){}
   Object.values(charts).forEach(c=>{try{c.destroy()}catch(e){}});
   charts={};A={};
+  // Reset loading steps
+  for(let i=1;i<=7;i++){
+    const el=document.getElementById('ls'+i);
+    if(el){el.classList.remove('done');el.querySelector('.dot').style.background='';}
+  }
 }
 
 async function processFile(file){
@@ -732,7 +762,6 @@ function analyze(text,filename){
   const posMonths=monthProfits.filter(p=>p>0).length;
 
   // Progressive cutoff simulation
-  const winMaxH=Math.floor(winMax/60),winMaxM=winMax%60;
   const cutoffSims=[];
   // Generate cutoff times in 30-min steps within window
   let cm=winMin+30;
