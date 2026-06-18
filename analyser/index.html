@@ -1065,11 +1065,28 @@ function analyze(text,filename){
   const monthProfits=monthKeys.map(k=>byMonth[k].profit);
   const posMonths=monthProfits.filter(p=>p>0).length;
 
-  // Progressive cutoff simulation
+  // ── Detecção automática do timeframe pelo durationMed ──
+  // durationMed = duração mediana dos trades em minutos
+  // Isso revela o timeframe real do gráfico usado pelo robô
+  // Detecção automática de timeframe pela duração mediana dos trades
+  // Um trade de 1 min dura em média até 2x o TF (1-3min para TF=1min)
+  // Um trade de 5 min dura em média 5-15min, etc.
+  let detectedTF=1;
+  if(durationMed>=40)detectedTF=30;
+  else if(durationMed>=12)detectedTF=15;
+  else if(durationMed>=4)detectedTF=5;
+  else if(durationMed>=2)detectedTF=3;
+  else detectedTF=1;
+
+  // Granularidade dos cortes = timeframe detectado
+  // Granularidade das pausas = 2x a granularidade dos cortes (blocos maiores)
+  const cutStep=detectedTF<=1?1:detectedTF<=3?3:detectedTF<=5?5:detectedTF<=15?10:15;
+  const pauseStep=cutStep*2;
+
+  // ── Simulação de encerramento progressivo (granularidade do TF) ──
   const cutoffSims=[];
-  // Generate cutoff times in 30-min steps within window
-  let cm=winMin+30;
-  while(cm<=winMax+30){
+  let cm=winMin+cutStep;
+  while(cm<=winMax+cutStep){
     const ch=Math.floor(cm/60),cmin=cm%60;
     const filtered=trades.filter(t=>t.hour*60+t.minute<=cm);
     if(filtered.length>0){
@@ -1080,24 +1097,24 @@ function analyze(text,filename){
       cutoffSims.push({label:`${String(ch).padStart(2,'0')}:${String(cmin).padStart(2,'0')}`,
         n:rs.length,profit:sum(rs),dd:dd2,wr:g.length/rs.length,minutes:cm});
     }
-    cm+=30;
+    cm+=cutStep;
   }
-  // Find best cutoff: highest score = profit * wr / (dd+1)
+  // Find best cutoff: score = profit * wr / (dd+1)
   let bestCut=null,bestScore=-Infinity;
   for(const s of cutoffSims){
     const score=(s.profit*s.wr)/(s.dd+1);
     if(score>bestScore){bestScore=score;bestCut=s}
   }
 
-  // Pause simulation (30-min blocks inside window)
+  // ── Simulação de pausas intraday (granularidade do TF) ──
   const pauseSims=[];
   let pm=winMin;
-  while(pm+30<=winMax){
-    const pm2=pm+30;
+  while(pm+pauseStep<=winMax){
+    const pm2=pm+pauseStep;
     const excluded=trades.filter(t=>{const tm=t.hour*60+t.minute;return tm>=pm&&tm<pm2});
     const included=trades.filter(t=>{const tm=t.hour*60+t.minute;return tm<pm||tm>=pm2});
     const rs=included.map(t=>t.resultado);
-    if(rs.length===0){pm+=30;continue}
+    if(rs.length===0){pm+=pauseStep;continue}
     const g=rs.filter(r=>r>0);
     let c2=0,pk2=0,dd2=0;
     for(const r of rs){c2+=r;if(c2>pk2)pk2=c2;if(pk2-c2>dd2)dd2=pk2-c2}
@@ -1106,12 +1123,12 @@ function analyze(text,filename){
     const ch2=Math.floor(pm2/60),cmin2=pm2%60;
     pauseSims.push({label:`${String(ch).padStart(2,'0')}:${String(cmin).padStart(2,'0')}–${String(ch2).padStart(2,'0')}:${String(cmin2).padStart(2,'0')}`,
       n:rs.length,profit:sum(rs),dd:dd2,wr:g.length/rs.length,lostProfit,removed:excluded.length});
-    pm+=30;
+    pm+=pauseStep;
   }
-  // Best pause: max improvement = profit - totalProfit
+  // Best pause: highest profit gain vs baseline
   let bestPause=null,bestPauseScore=-Infinity;
   for(const s of pauseSims){
-    const score=s.profit-totalProfit; // positive if removing that block helps
+    const score=s.profit-totalProfit;
     if(score>bestPauseScore){bestPauseScore=score;bestPause=s}
   }
 
@@ -1232,6 +1249,7 @@ function analyze(text,filename){
     classif,classifDesc,score,
     costPerTrade,totalCost,netProfit,costPct,
     startDate:trades[0].date,endDate:trades[n-1].date,
+    detectedTF,cutStep,pauseStep,
     totalProfitGross,totalCostAll,costPerTradeFmt,avgQty,
     avgPtsCapturado:trades.filter(t=>t.ptsCapturado>0).length?
       trades.filter(t=>t.ptsCapturado>0).reduce((a,t)=>a+t.ptsCapturado,0)/trades.filter(t=>t.ptsCapturado>0).length:0,
@@ -1392,7 +1410,11 @@ function renderHorarios(){
   const d=A;
   document.getElementById('janFirst').textContent=fmtTime(d.winMinH,d.winMinM);
   document.getElementById('janLast').textContent=fmtTime(d.winMaxH,d.winMaxM);
-  document.getElementById('janAlert').innerHTML=alertBox('a','ℹ️',`Janela operacional real: <strong>${fmtTime(d.winMinH,d.winMinM)} → ${fmtTime(d.winMaxH,d.winMaxM)}</strong>. Todos os testes de corte e pausa respeitam essa faixa.`);
+  document.getElementById('janAlert').innerHTML=alertBox('a','ℹ️',`Janela operacional real: <strong>${fmtTime(d.winMinH,d.winMinM)} → ${fmtTime(d.winMaxH,d.winMaxM)}</strong>. Todos os testes respeitam essa faixa.`);
+
+  const tfLabel=d.detectedTF<=1?'1 minuto':d.detectedTF<=3?'3 minutos':d.detectedTF<=5?'5 minutos':d.detectedTF<=15?'15 minutos':'30 minutos';
+  document.getElementById('janAlert').innerHTML+=alertBox('a','🔍',`<strong>Timeframe detectado: ${tfLabel}</strong> — duração mediana: ${d.durationMed} min. `+
+    `Cortes de <strong>${d.cutStep} em ${d.cutStep} min</strong>. Pausas em blocos de <strong>${d.pauseStep} min</strong>.`);
 
   // Hour bars
   const hours=Object.keys(d.byHour).sort((a,b)=>+a-+b);
@@ -1428,6 +1450,7 @@ function renderHorarios(){
   // Cutoff table
   const best=d.bestCut;
   document.getElementById('cutoffTable').innerHTML=
+    `<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Granularidade: ${d.cutStep} min · Timeframe detectado: ${tfLabel}</div>`+
     hrow(['Corte','Trades','Lucro','DD','Acerto'])+
     d.cutoffSims.map(s=>trow([
       s.label===best?.label?`<strong>${s.label}</strong>`:s.label,
@@ -1437,12 +1460,14 @@ function renderHorarios(){
       {v:pct(s.wr),cls:s.wr>=0.9?'pos':s.wr>=0.75?'neu':'neg'},
     ])).join('');
   document.getElementById('cutoffAlert').innerHTML=best?
-    alertBox('g','🎯',`<strong>Melhor corte: ${best.label}</strong> — ${best.n} trades, ${fmtR(best.profit)} de lucro, DD ${fmtR(best.dd)}, acerto ${pct(best.wr)}.`):'';
+    alertBox('g','🎯',`<strong>Melhor corte: ${best.label}</strong> — ${best.n} trades, ${fmtR(best.profit)} de lucro, DD ${fmtR(best.dd)}, acerto ${pct(best.wr)}. `+
+      `(Testado de ${d.cutStep} em ${d.cutStep} min — timeframe detectado: ${tfLabel})`):'';
 
   // Pause table
   const sortedPauses=[...d.pauseSims].sort((a,b)=>b.profit-a.profit);
   const bestP=sortedPauses[0];
   document.getElementById('pauseTable').innerHTML=
+    `<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Blocos de pausa: ${d.pauseStep} min · Timeframe detectado: ${tfLabel}</div>`+
     hrow(['Pausa','Trades restantes','Lucro resultante','DD','Resultado removido'])+
     sortedPauses.slice(0,8).map(s=>trow([
       s.label,s.n,
