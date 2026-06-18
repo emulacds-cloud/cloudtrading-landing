@@ -4,7 +4,208 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Setup Analyzer — CloudPlay</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js">
+// ══════════════════════ SIMULADOR ══════════════════════
+let simChart = null;
+let currentSimPct = 100;
+
+function showTab(id, btn) {
+  document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  if (btn) btn.classList.add('active');
+  if (id === 'curve') renderCurveChart();
+  if (id === 'temporal') renderMonthChart();
+  if (id === 'outliers') renderHistChart();
+  if (id === 'simulador') { runSim(currentSimPct, null); }
+}
+
+function runSim(pct2, btn) {
+  if (!A || !A.trades) return;
+  currentSimPct = pct2;
+  // Update button states
+  document.querySelectorAll('.sim-btn').forEach(b => {
+    b.classList.remove('active');
+    if (b.textContent.trim() === '100% (real)') b.classList.add('active-base');
+  });
+  if (btn) { btn.classList.remove('active-base'); btn.classList.add('active'); }
+  renderSimulator(pct2, null);
+}
+
+function runSimPts() {
+  const val = parseFloat(document.getElementById('simPtsInput').value);
+  if (!val || val <= 0) return;
+  document.querySelectorAll('.sim-btn').forEach(b => b.classList.remove('active'));
+  renderSimulator(null, val);
+}
+
+function renderSimulator(pctOfReal, fixedPts) {
+  const d = A;
+  if (!d || !d.trades) return;
+
+  // For each winning trade, calculate what the result would be with reduced gain
+  // Losing trades are unchanged (we can't simulate them without candle data)
+  const avgPts = d.avgPtsCapturado;
+
+  const simTrades = d.trades.map(t => {
+    if (t.resultado <= 0) {
+      // Loss: unchanged — we don't know if a wider stop would have helped
+      return { ...t, simResultado: t.resultado, simPts: 0, changed: false, blocked: false };
+    }
+    // Win: calculate simulated gain
+    let targetPts;
+    if (fixedPts !== null && fixedPts !== undefined) {
+      targetPts = fixedPts;
+    } else {
+      targetPts = t.ptsCapturado * (pctOfReal / 100);
+    }
+
+    // Can we simulate? Only if targetPts <= ptsCapturado (market proved it got there)
+    if (targetPts > t.ptsCapturado && t.ptsCapturado > 0) {
+      // Cannot simulate: would need candle data
+      return { ...t, simResultado: t.resultado, simPts: t.ptsCapturado, changed: false, blocked: true };
+    }
+
+    // Calculate simulated result in R$
+    // Original: resultado = ptsCapturado * valorPorPonto
+    // valorPorPonto = resultado / ptsCapturado
+    const valPorPto = t.ptsCapturado > 0 ? t.resultado / t.ptsCapturado : 0;
+    const simResultado = targetPts > 0 && valPorPto > 0
+      ? Math.round(targetPts * valPorPto * 100) / 100
+      : t.resultado;
+
+    return { ...t, simResultado, simPts: targetPts, changed: targetPts !== t.ptsCapturado, blocked: false };
+  });
+
+  // Compute simulated curve
+  let simCap = 0, realCap = 0;
+  const simCurve = [], realCurve = [];
+  simTrades.forEach(t => {
+    simCap += t.simResultado;
+    realCap += t.resultado;
+    simCurve.push(Math.round(simCap * 100) / 100);
+    realCurve.push(Math.round(realCap * 100) / 100);
+  });
+
+  // Sim stats
+  const simResults = simTrades.map(t => t.simResultado);
+  const simGains = simResults.filter(r => r > 0);
+  const simLosses = simResults.filter(r => r < 0);
+  const simTotal = simResults.reduce((a, b) => a + b, 0);
+  const simGrossP = simGains.reduce((a, b) => a + b, 0);
+  const simGrossL = Math.abs(simLosses.reduce((a, b) => a + b, 0));
+  const simPF = simGrossL > 0 ? simGrossP / simGrossL : Infinity;
+  const simWR = simGains.length / simResults.length;
+  let simPeak = 0, simDD = 0, simC2 = 0;
+  simCurve.forEach(v => {
+    if (v > simPeak) simPeak = v;
+    if (simPeak - v > simDD) simDD = simPeak - v;
+  });
+  const simRF = simDD > 0 ? simTotal / simDD : Infinity;
+  const blocked = simTrades.filter(t => t.blocked).length;
+
+  // Label
+  const label = fixedPts ? `${fixedPts} pts fixos` : `${pctOfReal}% do gain real`;
+
+  // KPIs
+  const diffTotal = simTotal - d.totalProfit;
+  document.getElementById('simKpis').innerHTML = [
+    kpiCard('Lucro Simulado', fmtR(simTotal), `${diffTotal >= 0 ? '+' : ''}${fmtR(diffTotal)} vs real`, simTotal >= d.totalProfit ? 'g' : 'r', simTotal >= d.totalProfit ? 'gt' : 'rt'),
+    kpiCard('Profit Factor Sim.', simPF === Infinity ? '∞' : fmt(simPF, 3), `Real: ${fmt(d.pf, 3)}`, simPF >= d.pf ? 'g' : 'r', ''),
+    kpiCard('Recovery Factor Sim.', simRF === Infinity ? '∞' : fmt(simRF, 2), `Real: ${fmt(d.rf, 2)}`, simRF >= d.rf ? 'g' : 'r', ''),
+    kpiCard('Trades bloqueados', String(blocked), `Gain maior que real — não simulável`, blocked > 0 ? 'y' : 'g', ''),
+  ].join('');
+
+  // Scenario table - all scenarios
+  const scenarios = [30, 40, 50, 60, 70, 80, 90, 100];
+  document.getElementById('simScenarioTable').innerHTML =
+    hrow(['Cenário', 'Lucro', 'PF', 'RF', 'DD', 'Bloqueados']) +
+    scenarios.map(sc => {
+      const sTrades = d.trades.map(t => {
+        if (t.resultado <= 0) return t.resultado;
+        const tgt = t.ptsCapturado * (sc / 100);
+        if (tgt > t.ptsCapturado && t.ptsCapturado > 0) return t.resultado;
+        const vpp = t.ptsCapturado > 0 ? t.resultado / t.ptsCapturado : 0;
+        return tgt > 0 && vpp > 0 ? Math.round(tgt * vpp * 100) / 100 : t.resultado;
+      });
+      const sG = sTrades.filter(r => r > 0); const sL = sTrades.filter(r => r < 0);
+      const sT = sTrades.reduce((a, b) => a + b, 0);
+      const sPF = Math.abs(sL.reduce((a, b) => a + b, 0)) > 0 ? sG.reduce((a, b) => a + b, 0) / Math.abs(sL.reduce((a, b) => a + b, 0)) : Infinity;
+      let sP = 0, sD = 0, sC = 0;
+      sTrades.forEach(r => { sC += r; if (sC > sP) sP = sC; if (sP - sC > sD) sD = sP - sC; });
+      const sRF = sD > 0 ? sT / sD : Infinity;
+      const sBlk = d.trades.filter(t => t.resultado > 0 && t.ptsCapturado > 0 && t.ptsCapturado * (sc / 100) > t.ptsCapturado).length;
+      const isActive = (fixedPts === null || fixedPts === undefined) && sc === pctOfReal;
+      return `<tr style="${isActive ? 'background:rgba(0,119,204,.07);font-weight:600' : ''}">
+        <td>${sc}%${sc === 100 ? ' <span style="color:var(--muted);font-size:10px">(real)</span>' : ''}</td>
+        <td class="${sT >= d.totalProfit ? 'pos' : 'neg'}">${fmtR(sT)}</td>
+        <td class="${sPF >= 2 ? 'pos' : sPF >= 1.3 ? 'neu' : 'neg'}">${sPF === Infinity ? '∞' : fmt(sPF, 2)}</td>
+        <td class="${sRF >= 5 ? 'pos' : sRF >= 2 ? 'neu' : 'neg'}">${sRF === Infinity ? '∞' : fmt(sRF, 2)}</td>
+        <td class="${sD < d.maxDD ? 'pos' : sD === d.maxDD ? 'neu' : 'neg'}">${fmtR(sD)}</td>
+        <td class="${sBlk > 0 ? 'neg' : 'pos'}">${sBlk > 0 ? sBlk + ' ⚠️' : '0'}</td>
+      </tr>`;
+    }).join('');
+
+  // Trade-by-trade table
+  document.getElementById('simTradeTable').innerHTML =
+    hrow(['Data', 'Hora entrada', 'Pts reais', 'Pts simulados', 'R$ real', 'R$ simulado', 'Diferença', 'Status']) +
+    simTrades.map(t => {
+      const diff = t.simResultado - t.resultado;
+      let status;
+      if (t.resultado < 0) status = badge('Loss — inalterado', 'r');
+      else if (t.blocked) status = badge('Bloqueado ⚠️', 'y');
+      else if (t.simPts < t.ptsCapturado) status = badge('Saída antecipada', 'a');
+      else status = badge('Igual ao real', 'p');
+      return trow([
+        t.date,
+        fmtTime(t.hour, t.minute),
+        { v: t.ptsCapturado > 0 ? fmt(t.ptsCapturado) + ' pts' : '—', cls: '' },
+        { v: t.simPts > 0 ? fmt(t.simPts) + ' pts' : '—', cls: '' },
+        { v: fmtR(t.resultado), cls: t.resultado >= 0 ? 'pos' : 'neg' },
+        { v: fmtR(t.simResultado), cls: t.simResultado >= 0 ? 'pos' : 'neg' },
+        { v: diff !== 0 ? (diff > 0 ? '+' : '') + fmtR(diff) : '—', cls: diff > 0 ? 'pos' : diff < 0 ? 'neg' : '' },
+        status,
+      ]);
+    }).join('');
+
+  // Insight box
+  const insight = [];
+  if (blocked > 0) {
+    insight.push({ cls: 'y', icon: '⚠️', text: `<strong>${blocked} trade(s) bloqueado(s)</strong> — o gain simulado é maior que o movimento real registrado. Para simular gains maiores que o real, seria necessário o histórico de candles do WIN.` });
+  }
+  if (simTotal > d.totalProfit) {
+    insight.push({ cls: 'g', icon: '💡', text: `Com gain de <strong>${label}</strong>, o lucro <strong>aumenta</strong> para ${fmtR(simTotal)} (+${fmtR(diffTotal)}). O setup sairia mais cedo em cada trade vencedor.` });
+  } else if (simTotal < d.totalProfit) {
+    insight.push({ cls: 'r', icon: '📉', text: `Com gain de <strong>${label}</strong>, o lucro <strong>cai</strong> para ${fmtR(simTotal)} (${fmtR(diffTotal)}). O gain configurado atual está melhor calibrado para os movimentos que o mercado entrega.` });
+  }
+  if (simDD < d.maxDD) {
+    insight.push({ cls: 'g', icon: '🛡️', text: `Drawdown máximo <strong>reduz</strong> de ${fmtR(d.maxDD)} para ${fmtR(simDD)} — saídas mais rápidas protegem o capital em cenários adversos.` });
+  }
+  document.getElementById('simInsightBox').innerHTML =
+    '<h3>Interpretação</h3>' + insight.map(i => alertBox(i.cls, i.icon, i.text)).join('');
+
+  // Chart
+  const labels = d.trades.map((t, i) => String(i + 1));
+  if (simChart) { simChart.destroy(); simChart = null; }
+  const ctx = document.getElementById('simCurveChart').getContext('2d');
+  simChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Real', data: realCurve, borderColor: C.muted, borderWidth: 1.5, borderDash: [4, 3], pointRadius: 0, fill: false, tension: 0.1 },
+        { label: `Simulado (${label})`, data: simCurve, borderColor: C.accent, borderWidth: 2, pointRadius: 3, pointBackgroundColor: simTrades.map(t => t.blocked ? C.yellow : t.resultado < 0 ? C.red : C.green), fill: true, backgroundColor: 'rgba(0,119,204,0.05)', tension: 0.1 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: true, labels: { color: '#5a6480', font: { size: 11 } } } },
+      scales: { x: { ticks: { maxTicksLimit: 12 } }, y: { ticks: { callback: v => 'R$' + v } } }
+    }
+  });
+}
+
+</script>
 <style>
 :root {
   --bg:#f4f6fa;--surface:#ffffff;--surface2:#f0f2f7;--surface3:#e8ecf4;
@@ -140,6 +341,11 @@ canvas{max-width:100%}
 .rec-list .dot.y{background:var(--yellow)}
 .rec-list .dot.a{background:var(--accent)}
 
+.sim-btn{background:var(--surface2);border:1px solid var(--border);color:var(--muted);
+  padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;transition:all .2s}
+.sim-btn:hover{border-color:var(--accent);color:var(--accent)}
+.sim-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.sim-btn.active-base{background:var(--surface3);color:var(--text);border-color:var(--border);font-style:italic}
 .mb{margin-bottom:16px}
 .mb2{margin-bottom:24px}
 .mt{margin-top:12px}
@@ -211,6 +417,7 @@ canvas{max-width:100%}
     <button onclick="showTab('outliers',this)">⚡ Outliers</button>
     <button onclick="showTab('custos',this)">💸 Custos</button>
     <button onclick="showTab('relatorio',this)">📋 Relatório Final</button>
+    <button onclick="showTab('simulador',this)">🧪 Simulador</button>
   </nav>
 
   <main>
@@ -451,6 +658,72 @@ canvas{max-width:100%}
       <div class="card"><h3>💡 Recomendações</h3><ul class="rec-list" id="recs"></ul></div>
     </section>
 
+    <!-- SIMULADOR DE GAIN -->
+    <section id="tab-simulador">
+      <h2>🧪 Simulador de Gain Alternativo <span class="tag">Baseado em dados reais</span></h2>
+
+      <div class="alert a mb2">
+        <div class="ic">📌</div>
+        <div>
+          <strong>Como funciona:</strong> O CSV registra o preço de entrada e saída de cada trade. 
+          Com isso sabemos exatamente quantos pontos o mercado se moveu a favor em cada operação vencedora. 
+          A simulação de <strong>gain menor</strong> é 100% real — o mercado já provou que chegou lá. 
+          A simulação de <strong>gain maior ou loss alterado</strong> exigiria histórico de candles e 
+          <strong>não é feita aqui</strong> para evitar dados inventados.
+        </div>
+      </div>
+
+      <div class="card mb2">
+        <h3>Configurar Simulação</h3>
+        <div style="display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+          <div>
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px">Gain simulado (% do gain real)</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap" id="simButtons">
+              <button class="sim-btn active" onclick="runSim(30,this)">30%</button>
+              <button class="sim-btn" onclick="runSim(40,this)">40%</button>
+              <button class="sim-btn" onclick="runSim(50,this)">50%</button>
+              <button class="sim-btn" onclick="runSim(60,this)">60%</button>
+              <button class="sim-btn" onclick="runSim(70,this)">70%</button>
+              <button class="sim-btn" onclick="runSim(80,this)">80%</button>
+              <button class="sim-btn" onclick="runSim(90,this)">90%</button>
+              <button class="sim-btn active-base" onclick="runSim(100,this)">100% (real)</button>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px">Ou valor fixo em pontos</div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input id="simPtsInput" type="number" min="5" max="500" step="5" placeholder="ex: 100"
+                style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:6px;font-size:13px;width:110px">
+              <button onclick="runSimPts()" style="background:var(--accent);color:#fff;border:none;padding:7px 16px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Simular</button>
+            </div>
+          </div>
+        </div>
+        <div style="font-size:12px;color:var(--muted)">
+          ⚠️ Gain maior que o real não é simulável — o CSV não registra o que aconteceu depois da saída.
+        </div>
+      </div>
+
+      <div class="grid g4 mb2" id="simKpis"></div>
+
+      <div class="grid g12 mb2">
+        <div class="card">
+          <h3>Curva de Capital Comparada</h3>
+          <div class="chart-wrap" style="height:260px"><canvas id="simCurveChart"></canvas></div>
+        </div>
+        <div class="card">
+          <h3>Impacto por Cenário</h3>
+          <table id="simScenarioTable"></table>
+        </div>
+      </div>
+
+      <div class="card mb2">
+        <h3>Resultado por Trade (Gain Simulado vs Real)</h3>
+        <table id="simTradeTable"></table>
+      </div>
+
+      <div class="card" id="simInsightBox"></div>
+    </section>
+
   </main>
 </div>
 
@@ -569,7 +842,8 @@ function analyze(text,filename){
       if(seenEntrada.has(dtStr))continue;
       seenEntrada.add(dtStr);
       const dt=parseDT(dtStr);
-      if(dt)entryRows.push({dt,date:fmtDate(dt)});
+      const entryPrice=parseBR(r[9]);
+      if(dt)entryRows.push({dt,date:fmtDate(dt),entryPrice:entryPrice||0});
       continue;
     }
     if(tipo!=='saída'&&tipo!=='saida')continue;
@@ -580,7 +854,8 @@ function analyze(text,filename){
     const key=dtStr+'|'+ r[12];
     if(seenSaida.has(key))continue;
     seenSaida.add(key);
-    exitRows.push({dt,date:fmtDate(dt),resultado:res});
+    const exitPrice=parseBR(r[9]);
+    exitRows.push({dt,date:fmtDate(dt),resultado:res,exitPrice:exitPrice||0});
   }
   exitRows.sort((a,b)=>a.dt-b.dt);
   entryRows.sort((a,b)=>a.dt-b.dt);
@@ -613,6 +888,17 @@ function analyze(text,filename){
     // Horário da ENTRADA para análise de horário
     const entryDt=bestEntry?bestEntry.dt:ex.dt;
     const durationMin=bestEntry?Math.round((ex.dt-bestEntry.dt)/6000)/10:0;
+    // Calcular movimento em pontos (preço de saída - preço de entrada)
+    // positivo = mercado foi a favor, negativo = foi contra
+    const entryPx=bestEntry?bestEntry.entryPrice:0;
+    const exitPx=ex.exitPrice||0;
+    // Detectar direção: se C/V da saída indica short ou long
+    // resultado positivo com exitPx > entryPx = long; negativo com exitPx < entryPx = short
+    // Movimento real em pontos (sempre positivo = quanto o mercado se moveu)
+    const priceDiff=entryPx&&exitPx?Math.abs(exitPx-entryPx):0;
+    // Pontos a favor = priceDiff quando resultado > 0, undefined when loss
+    const ptsCapturado=ex.resultado>0?priceDiff:0;
+
     trades.push({
       dt:ex.dt,entryDt,
       date:ex.date,
@@ -625,6 +911,9 @@ function analyze(text,filename){
       month:ex.dt.getMonth()+1,
       year:ex.dt.getFullYear(),
       durationMin,
+      entryPrice:entryPx,
+      exitPrice:exitPx,
+      ptsCapturado,  // pontos reais capturados (0 se loss)
     });
   }
   trades.sort((a,b)=>a.dt-b.dt);
@@ -928,6 +1217,8 @@ function analyze(text,filename){
     classif,classifDesc,score,
     costPerTrade,totalCost,netProfit,costPct,
     startDate:trades[0].date,endDate:trades[n-1].date,
+    avgPtsCapturado:trades.filter(t=>t.ptsCapturado>0).length?
+      trades.filter(t=>t.ptsCapturado>0).reduce((a,t)=>a+t.ptsCapturado,0)/trades.filter(t=>t.ptsCapturado>0).length:0,
     phases,lossCluster,
   };
 }
@@ -959,15 +1250,7 @@ function rfStatus(rf){if(rf>=8)return['g','EXCELENTE'];if(rf>=5)return['g','BOM'
 function sharpeStatus(sh){if(sh>=2)return['g','EXCELENTE'];if(sh>=1)return['g','BOM'];if(sh>=0.5)return['y','ABAIXO'];return['r','RUIM']}
 
 // ══════════════════════ TAB NAVIGATION ══════════════════════
-function showTab(id,btn){
-  document.querySelectorAll('section').forEach(s=>s.classList.remove('active'));
-  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
-  document.getElementById('tab-'+id).classList.add('active');
-  if(btn)btn.classList.add('active');
-  if(id==='curve')renderCurveChart();
-  if(id==='temporal')renderMonthChart();
-  if(id==='outliers')renderHistChart();
-}
+
 
 // ══════════════════════ RENDER DASHBOARD ══════════════════════
 function renderDashboard(){
@@ -1604,6 +1887,207 @@ function renderRelatorio(){
   recs.push({t:'a',v:`<strong>Escalonamento gradual:</strong> Com RF de ${fmt(d.rf,2)} e Monte Carlo sólido, o setup suporta escalonamento conservador quando o histórico confirmar estabilidade.`});
   document.getElementById('recs').innerHTML=recs.map(r=>`<li><div class="dot ${r.t}"></div><div>${r.v}</div></li>`).join('');
 }
+
+// ══════════════════════ SIMULADOR ══════════════════════
+let simChart = null;
+let currentSimPct = 100;
+
+function showTab(id, btn) {
+  document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  if (btn) btn.classList.add('active');
+  if (id === 'curve') renderCurveChart();
+  if (id === 'temporal') renderMonthChart();
+  if (id === 'outliers') renderHistChart();
+  if (id === 'simulador') { runSim(currentSimPct, null); }
+}
+
+function runSim(pct2, btn) {
+  if (!A || !A.trades) return;
+  currentSimPct = pct2;
+  // Update button states
+  document.querySelectorAll('.sim-btn').forEach(b => {
+    b.classList.remove('active');
+    if (b.textContent.trim() === '100% (real)') b.classList.add('active-base');
+  });
+  if (btn) { btn.classList.remove('active-base'); btn.classList.add('active'); }
+  renderSimulator(pct2, null);
+}
+
+function runSimPts() {
+  const val = parseFloat(document.getElementById('simPtsInput').value);
+  if (!val || val <= 0) return;
+  document.querySelectorAll('.sim-btn').forEach(b => b.classList.remove('active'));
+  renderSimulator(null, val);
+}
+
+function renderSimulator(pctOfReal, fixedPts) {
+  const d = A;
+  if (!d || !d.trades) return;
+
+  // For each winning trade, calculate what the result would be with reduced gain
+  // Losing trades are unchanged (we can't simulate them without candle data)
+  const avgPts = d.avgPtsCapturado;
+
+  const simTrades = d.trades.map(t => {
+    if (t.resultado <= 0) {
+      // Loss: unchanged — we don't know if a wider stop would have helped
+      return { ...t, simResultado: t.resultado, simPts: 0, changed: false, blocked: false };
+    }
+    // Win: calculate simulated gain
+    let targetPts;
+    if (fixedPts !== null && fixedPts !== undefined) {
+      targetPts = fixedPts;
+    } else {
+      targetPts = t.ptsCapturado * (pctOfReal / 100);
+    }
+
+    // Can we simulate? Only if targetPts <= ptsCapturado (market proved it got there)
+    if (targetPts > t.ptsCapturado && t.ptsCapturado > 0) {
+      // Cannot simulate: would need candle data
+      return { ...t, simResultado: t.resultado, simPts: t.ptsCapturado, changed: false, blocked: true };
+    }
+
+    // Calculate simulated result in R$
+    // Original: resultado = ptsCapturado * valorPorPonto
+    // valorPorPonto = resultado / ptsCapturado
+    const valPorPto = t.ptsCapturado > 0 ? t.resultado / t.ptsCapturado : 0;
+    const simResultado = targetPts > 0 && valPorPto > 0
+      ? Math.round(targetPts * valPorPto * 100) / 100
+      : t.resultado;
+
+    return { ...t, simResultado, simPts: targetPts, changed: targetPts !== t.ptsCapturado, blocked: false };
+  });
+
+  // Compute simulated curve
+  let simCap = 0, realCap = 0;
+  const simCurve = [], realCurve = [];
+  simTrades.forEach(t => {
+    simCap += t.simResultado;
+    realCap += t.resultado;
+    simCurve.push(Math.round(simCap * 100) / 100);
+    realCurve.push(Math.round(realCap * 100) / 100);
+  });
+
+  // Sim stats
+  const simResults = simTrades.map(t => t.simResultado);
+  const simGains = simResults.filter(r => r > 0);
+  const simLosses = simResults.filter(r => r < 0);
+  const simTotal = simResults.reduce((a, b) => a + b, 0);
+  const simGrossP = simGains.reduce((a, b) => a + b, 0);
+  const simGrossL = Math.abs(simLosses.reduce((a, b) => a + b, 0));
+  const simPF = simGrossL > 0 ? simGrossP / simGrossL : Infinity;
+  const simWR = simGains.length / simResults.length;
+  let simPeak = 0, simDD = 0, simC2 = 0;
+  simCurve.forEach(v => {
+    if (v > simPeak) simPeak = v;
+    if (simPeak - v > simDD) simDD = simPeak - v;
+  });
+  const simRF = simDD > 0 ? simTotal / simDD : Infinity;
+  const blocked = simTrades.filter(t => t.blocked).length;
+
+  // Label
+  const label = fixedPts ? `${fixedPts} pts fixos` : `${pctOfReal}% do gain real`;
+
+  // KPIs
+  const diffTotal = simTotal - d.totalProfit;
+  document.getElementById('simKpis').innerHTML = [
+    kpiCard('Lucro Simulado', fmtR(simTotal), `${diffTotal >= 0 ? '+' : ''}${fmtR(diffTotal)} vs real`, simTotal >= d.totalProfit ? 'g' : 'r', simTotal >= d.totalProfit ? 'gt' : 'rt'),
+    kpiCard('Profit Factor Sim.', simPF === Infinity ? '∞' : fmt(simPF, 3), `Real: ${fmt(d.pf, 3)}`, simPF >= d.pf ? 'g' : 'r', ''),
+    kpiCard('Recovery Factor Sim.', simRF === Infinity ? '∞' : fmt(simRF, 2), `Real: ${fmt(d.rf, 2)}`, simRF >= d.rf ? 'g' : 'r', ''),
+    kpiCard('Trades bloqueados', String(blocked), `Gain maior que real — não simulável`, blocked > 0 ? 'y' : 'g', ''),
+  ].join('');
+
+  // Scenario table - all scenarios
+  const scenarios = [30, 40, 50, 60, 70, 80, 90, 100];
+  document.getElementById('simScenarioTable').innerHTML =
+    hrow(['Cenário', 'Lucro', 'PF', 'RF', 'DD', 'Bloqueados']) +
+    scenarios.map(sc => {
+      const sTrades = d.trades.map(t => {
+        if (t.resultado <= 0) return t.resultado;
+        const tgt = t.ptsCapturado * (sc / 100);
+        if (tgt > t.ptsCapturado && t.ptsCapturado > 0) return t.resultado;
+        const vpp = t.ptsCapturado > 0 ? t.resultado / t.ptsCapturado : 0;
+        return tgt > 0 && vpp > 0 ? Math.round(tgt * vpp * 100) / 100 : t.resultado;
+      });
+      const sG = sTrades.filter(r => r > 0); const sL = sTrades.filter(r => r < 0);
+      const sT = sTrades.reduce((a, b) => a + b, 0);
+      const sPF = Math.abs(sL.reduce((a, b) => a + b, 0)) > 0 ? sG.reduce((a, b) => a + b, 0) / Math.abs(sL.reduce((a, b) => a + b, 0)) : Infinity;
+      let sP = 0, sD = 0, sC = 0;
+      sTrades.forEach(r => { sC += r; if (sC > sP) sP = sC; if (sP - sC > sD) sD = sP - sC; });
+      const sRF = sD > 0 ? sT / sD : Infinity;
+      const sBlk = d.trades.filter(t => t.resultado > 0 && t.ptsCapturado > 0 && t.ptsCapturado * (sc / 100) > t.ptsCapturado).length;
+      const isActive = (fixedPts === null || fixedPts === undefined) && sc === pctOfReal;
+      return `<tr style="${isActive ? 'background:rgba(0,119,204,.07);font-weight:600' : ''}">
+        <td>${sc}%${sc === 100 ? ' <span style="color:var(--muted);font-size:10px">(real)</span>' : ''}</td>
+        <td class="${sT >= d.totalProfit ? 'pos' : 'neg'}">${fmtR(sT)}</td>
+        <td class="${sPF >= 2 ? 'pos' : sPF >= 1.3 ? 'neu' : 'neg'}">${sPF === Infinity ? '∞' : fmt(sPF, 2)}</td>
+        <td class="${sRF >= 5 ? 'pos' : sRF >= 2 ? 'neu' : 'neg'}">${sRF === Infinity ? '∞' : fmt(sRF, 2)}</td>
+        <td class="${sD < d.maxDD ? 'pos' : sD === d.maxDD ? 'neu' : 'neg'}">${fmtR(sD)}</td>
+        <td class="${sBlk > 0 ? 'neg' : 'pos'}">${sBlk > 0 ? sBlk + ' ⚠️' : '0'}</td>
+      </tr>`;
+    }).join('');
+
+  // Trade-by-trade table
+  document.getElementById('simTradeTable').innerHTML =
+    hrow(['Data', 'Hora entrada', 'Pts reais', 'Pts simulados', 'R$ real', 'R$ simulado', 'Diferença', 'Status']) +
+    simTrades.map(t => {
+      const diff = t.simResultado - t.resultado;
+      let status;
+      if (t.resultado < 0) status = badge('Loss — inalterado', 'r');
+      else if (t.blocked) status = badge('Bloqueado ⚠️', 'y');
+      else if (t.simPts < t.ptsCapturado) status = badge('Saída antecipada', 'a');
+      else status = badge('Igual ao real', 'p');
+      return trow([
+        t.date,
+        fmtTime(t.hour, t.minute),
+        { v: t.ptsCapturado > 0 ? fmt(t.ptsCapturado) + ' pts' : '—', cls: '' },
+        { v: t.simPts > 0 ? fmt(t.simPts) + ' pts' : '—', cls: '' },
+        { v: fmtR(t.resultado), cls: t.resultado >= 0 ? 'pos' : 'neg' },
+        { v: fmtR(t.simResultado), cls: t.simResultado >= 0 ? 'pos' : 'neg' },
+        { v: diff !== 0 ? (diff > 0 ? '+' : '') + fmtR(diff) : '—', cls: diff > 0 ? 'pos' : diff < 0 ? 'neg' : '' },
+        status,
+      ]);
+    }).join('');
+
+  // Insight box
+  const insight = [];
+  if (blocked > 0) {
+    insight.push({ cls: 'y', icon: '⚠️', text: `<strong>${blocked} trade(s) bloqueado(s)</strong> — o gain simulado é maior que o movimento real registrado. Para simular gains maiores que o real, seria necessário o histórico de candles do WIN.` });
+  }
+  if (simTotal > d.totalProfit) {
+    insight.push({ cls: 'g', icon: '💡', text: `Com gain de <strong>${label}</strong>, o lucro <strong>aumenta</strong> para ${fmtR(simTotal)} (+${fmtR(diffTotal)}). O setup sairia mais cedo em cada trade vencedor.` });
+  } else if (simTotal < d.totalProfit) {
+    insight.push({ cls: 'r', icon: '📉', text: `Com gain de <strong>${label}</strong>, o lucro <strong>cai</strong> para ${fmtR(simTotal)} (${fmtR(diffTotal)}). O gain configurado atual está melhor calibrado para os movimentos que o mercado entrega.` });
+  }
+  if (simDD < d.maxDD) {
+    insight.push({ cls: 'g', icon: '🛡️', text: `Drawdown máximo <strong>reduz</strong> de ${fmtR(d.maxDD)} para ${fmtR(simDD)} — saídas mais rápidas protegem o capital em cenários adversos.` });
+  }
+  document.getElementById('simInsightBox').innerHTML =
+    '<h3>Interpretação</h3>' + insight.map(i => alertBox(i.cls, i.icon, i.text)).join('');
+
+  // Chart
+  const labels = d.trades.map((t, i) => String(i + 1));
+  if (simChart) { simChart.destroy(); simChart = null; }
+  const ctx = document.getElementById('simCurveChart').getContext('2d');
+  simChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Real', data: realCurve, borderColor: C.muted, borderWidth: 1.5, borderDash: [4, 3], pointRadius: 0, fill: false, tension: 0.1 },
+        { label: `Simulado (${label})`, data: simCurve, borderColor: C.accent, borderWidth: 2, pointRadius: 3, pointBackgroundColor: simTrades.map(t => t.blocked ? C.yellow : t.resultado < 0 ? C.red : C.green), fill: true, backgroundColor: 'rgba(0,119,204,0.05)', tension: 0.1 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: true, labels: { color: '#5a6480', font: { size: 11 } } } },
+      scales: { x: { ticks: { maxTicksLimit: 12 } }, y: { ticks: { callback: v => 'R$' + v } } }
+    }
+  });
+}
+
 </script>
 </body>
 </html>
