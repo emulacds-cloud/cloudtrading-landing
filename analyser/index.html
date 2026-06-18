@@ -612,7 +612,7 @@ canvas{max-width:100%}
     <!-- CUSTOS -->
     <section id="tab-custos">
       <h2>💸 Custos Operacionais <span class="tag">Etapa 20</span></h2>
-      <div class="alert a mb2"><div class="ic">ℹ️</div><div>Estimativas baseadas em valores típicos de mercado para WIN (mini índice B3). Confirme com sua corretora.</div></div>
+      <div class="alert a mb2"><div class="ic">📌</div><div><strong>Custo fixo aplicado: R$0,35 por contrato por lado</strong> (entrada + saída separados). Baseado na nota de negociação XP: emolumentos B3 R$0,09/contrato/lado + corretagem amortizada + margem de segurança. Todos os resultados já estão no líquido.</div></div>
       <div class="grid g4 mb2" id="custoKpis"></div>
       <div class="grid g12">
         <div class="card">
@@ -899,6 +899,12 @@ function analyze(text,filename){
     // Pontos a favor = priceDiff quando resultado > 0, undefined when loss
     const ptsCapturado=ex.resultado>0?priceDiff:0;
 
+    // Custo fixo: R$0,35 por contrato por lado (entrada + saída)
+    const COST_PER_CONTRACT_PER_SIDE = 0.35;
+    const tradeQty = ex.qty || 1;
+    const tradeCost = tradeQty * 2 * COST_PER_CONTRACT_PER_SIDE; // 2 lados
+    const netResultado = ex.resultado - tradeCost;
+
     trades.push({
       dt:ex.dt,entryDt,
       date:ex.date,
@@ -906,14 +912,17 @@ function analyze(text,filename){
       minute:entryDt.getMinutes(),  // ← ENTRADA
       exitHour:ex.dt.getHours(),
       exitMinute:ex.dt.getMinutes(),
-      resultado:ex.resultado,
+      resultado:ex.resultado,       // bruto
+      netResultado,                 // líquido (após custos)
+      tradeCost,                    // custo deste trade
+      qty:tradeQty,
       weekday:ex.dt.getDay(),
       month:ex.dt.getMonth()+1,
       year:ex.dt.getFullYear(),
       durationMin,
       entryPrice:entryPx,
       exitPrice:exitPx,
-      ptsCapturado,  // pontos reais capturados (0 se loss)
+      ptsCapturado,
     });
   }
   trades.sort((a,b)=>a.dt-b.dt);
@@ -932,12 +941,15 @@ function analyze(text,filename){
   const durationAvg=durations.length?durations.reduce((a,b)=>a+b,0)/durations.length:0;
 
 
-  // ── Basic stats ──
-  const results=trades.map(t=>t.resultado);
+  // ── Basic stats — tudo calculado no LÍQUIDO (após custos) ──
+  const results=trades.map(t=>t.netResultado);       // líquido
+  const resultsGross=trades.map(t=>t.resultado);     // bruto (referência)
   const gains=results.filter(r=>r>0);
   const losses=results.filter(r=>r<0);
   const n=results.length;
-  const totalProfit=sum(results);
+  const totalProfit=sum(results);                    // líquido
+  const totalProfitGross=sum(resultsGross);          // bruto
+  const totalCostAll=trades.reduce((a,t)=>a+t.tradeCost,0);
   const grossProfit=sum(gains);
   const grossLoss=Math.abs(sum(losses));
   const pf=grossLoss>0?grossProfit/grossLoss:Infinity;
@@ -945,8 +957,11 @@ function analyze(text,filename){
   const avgGain=gains.length?mean(gains):0;
   const avgLoss=losses.length?Math.abs(mean(losses)):0;
   const payoff=avgLoss>0?avgGain/avgLoss:0;
-  const breakEvenWR=avgLoss/(avgGain+avgLoss)||0;
+  const breakEvenWR=avgLoss>0?avgLoss/(avgGain+avgLoss):0;
   const em=wr*avgGain-(1-wr)*avgLoss;
+  // Avg contracts (from CSV)
+  const avgQty=trades.length?trades.reduce((a,t)=>a+t.qty,0)/trades.length:1;
+  const costPerTradeFmt=trades.length?totalCostAll/trades.length:0;
 
   // Capital curve & drawdown
   let cap=0,peak=0,maxDD=0,ddPeak=0,ddIdx=-1;
@@ -1217,6 +1232,7 @@ function analyze(text,filename){
     classif,classifDesc,score,
     costPerTrade,totalCost,netProfit,costPct,
     startDate:trades[0].date,endDate:trades[n-1].date,
+    totalProfitGross,totalCostAll,costPerTradeFmt,avgQty,
     avgPtsCapturado:trades.filter(t=>t.ptsCapturado>0).length?
       trades.filter(t=>t.ptsCapturado>0).reduce((a,t)=>a+t.ptsCapturado,0)/trades.filter(t=>t.ptsCapturado>0).length:0,
     phases,lossCluster,
@@ -1280,10 +1296,10 @@ function renderOverview(){
   const d=A;
   const [pfCls]=pfStatus(d.pf);
   document.getElementById('kpiRow').innerHTML=[
-    kpiCard('Lucro Total Bruto',fmtR(d.totalProfit),`${d.n} trades`,'g','gt'),
-    kpiCard('Taxa de Acerto',pct(d.wr),`${d.gains.length} wins / ${d.losses.length} losses`,'g','gt'),
-    kpiCard('Profit Factor',fmt(d.pf,3),'Ref: excelente > 2.0',pfCls,'at'),
-    kpiCard('Drawdown Máximo',fmtR(d.maxDD),d.maxDD>0?`${pct(d.maxDD/(d.totalProfit+d.maxDD))} do pico`:'Sem drawdown','r','rt'),
+    kpiCard('Resultado Líquido',fmtR(d.totalProfit),`Bruto: ${fmtR(d.totalProfitGross)} · Custos: ${fmtR(d.totalCostAll)}`,d.totalProfit>=0?'g':'r',d.totalProfit>=0?'gt':'rt'),
+    kpiCard('Taxa de Acerto',pct(d.wr),`${d.gains.length} wins / ${d.losses.length} losses (líquido)`,'g','gt'),
+    kpiCard('Profit Factor',fmt(d.pf,3),'Calculado no líquido',pfCls,'at'),
+    kpiCard('Drawdown Máximo',fmtR(d.maxDD),d.maxDD>0?`${pct(d.maxDD/Math.max(1,d.totalProfitGross))} do bruto`:'Sem drawdown','r','rt'),
     kpiCard('Recovery Factor',fmt(d.rf,2),'Ref: excelente > 5.0',d.rf>=5?'g':'y','gt'),
   ].join('');
   document.getElementById('kpiRow2').innerHTML=[
@@ -1298,6 +1314,8 @@ function renderOverview(){
     row('Período',`${d.startDate} → ${d.endDate}`)+
     row('Total de trades',d.n)+
     row('Frequência média',`${(d.n/Math.max(1,monthKeys2months(d.monthKeys))).toFixed(1)} trades/mês`)+
+    row('Contratos (média)',`${d.avgQty?d.avgQty.toFixed(1):1} contratos`)+
+    row('Custo por trade',`<strong style="color:var(--red)">${fmtR(d.costPerTradeFmt,2)}</strong> (R$0,35/contrato/lado)`)+
     row('Gain médio observado',`<span class="pos">${fmtR(d.avgGain,2)}</span>`)+
     row('Loss médio observado',`<span class="neg">${fmtR(d.avgLoss,2)}</span>`)+
     row('Janela operacional',`${fmtTime(d.winMinH,d.winMinM)} → ${fmtTime(d.winMaxH,d.winMaxM)}`)+
@@ -1773,32 +1791,49 @@ function renderHistChart(){
 function renderCustos(){
   const d=A;
   document.getElementById('custoKpis').innerHTML=[
-    kpiCard('Lucro Bruto',fmtR(d.totalProfit),`${d.n} trades`,'g','gt'),
-    kpiCard('Custo Estimado',fmtR(d.totalCost),`~${fmtR(d.costPerTrade,2)}/trade`,'r','rt'),
-    kpiCard('Lucro Líquido Est.',fmtR(d.netProfit),'Após custos típicos',d.netProfit>=0?'y':'r','yt'),
-    kpiCard('Custos / Bruto',pct(d.costPct/100),d.costPct<30?'Abaixo do alerta':'Acima de 30% — alerta',d.costPct<30?'g':'r',''),
+    kpiCard('Resultado Bruto',fmtR(d.totalProfitGross),`${d.n} trades`,'g','gt'),
+    kpiCard('Custos Operacionais',fmtR(d.totalCostAll),`${fmtR(d.costPerTradeFmt,2)}/trade · R$0,35/contrato/lado`,'r','rt'),
+    kpiCard('Resultado Líquido',fmtR(d.totalProfit),'Após custos reais',d.totalProfit>=0?'g':'r',d.totalProfit>=0?'gt':'rt'),
+    kpiCard('Custos / Bruto',pct(d.totalCostAll/Math.max(1,Math.abs(d.totalProfitGross))),d.totalCostAll/Math.max(1,Math.abs(d.totalProfitGross))<0.3?'Saudável':'Atenção',d.totalCostAll/Math.max(1,Math.abs(d.totalProfitGross))<0.3?'g':'r',''),
   ].join('');
 
+  const ctQty=d.avgQty||1;
   document.getElementById('custoTable').innerHTML=
-    hrow(['Item','Estimativa','Observação'])+
-    [['Corretagem (entrada+saída)','R$ 1,50–2,50','Por trade total (2 lados)'],
-     ['Emolumentos B3','R$ 0,20–0,40','Por trade'],
-     ['Slippage médio','R$ 0–5,00','1 tick WIN = R$ 5'],
-     ['Total estimado','R$ 2,00–5,00 por trade','Confirmar com corretora'],
-    ].map(r=>trow(r)).join('');
+    hrow(['Item','Por contrato/lado','Por trade ('+fmt(ctQty,0)+' contratos)','Observação'])+
+    trow(['Emolumentos B3 (negociação+liquidação)',`R$0,09`,{v:`R${fmtR(0.09*ctQty*2)}`,cls:'neg'},'Taxa oficial B3 (liquidação R$0,30 + negociação reduzida)'])+
+    trow(['Corretagem (XP)','—',{v:'~R$0,24',cls:'neg'},'Flat ~R$1,22/dia ÷ trades do dia (amortizado)'])+
+    trow(['Margem de segurança / slippage','R$0,26',{v:`R${fmtR(0.26*ctQty*2)}`,cls:'neg'},'Buffer conservador'])+
+    trow([`<strong>Total fixo aplicado</strong>`,'<strong>R$0,35</strong>',{v:`<strong>${fmtR(d.costPerTradeFmt,2)}</strong>`,cls:'neg'},'<strong>R$0,35/contrato/lado — todos os trades</strong>'])+
+    trow(['Total custos histórico','—',{v:fmtR(d.totalCostAll),cls:'neg'},`${d.n} trades × ${fmtR(d.costPerTradeFmt,2)}`]);
 
-  const slips=[0,5,10,15];
+  // Sensibilidade: variar custo por contrato em torno de R$0,35
+  const costVariants=[0.20,0.25,0.30,0.35,0.40,0.45,0.50];
+  const ctQ=d.avgQty||1;
   document.getElementById('slipTable').innerHTML=
-    hrow(['Cenário','Custo adicional','Lucro líquido'])+
-    slips.map(s=>{
-      const extra=s*d.n;const net=d.netProfit-extra;
-      return trow([`+${s>0?`R$${s}/trade`:'sem slippage'}`,{v:fmtR(extra),cls:extra===0?'pos':'neg'},{v:fmtR(net),cls:net>=0?'pos':'neg'}]);
+    hrow(['Custo/contrato/lado','Custo/trade','Total','Resultado líquido','vs cenário atual'])+
+    costVariants.map(cv=>{
+      const cpTrade=cv*ctQ*2;
+      const totCost=cpTrade*d.n;
+      const netV=d.totalProfitGross-totCost;
+      const diff=netV-d.totalProfit;
+      const isBase=Math.abs(cv-0.35)<0.001;
+      return `<tr style="${isBase?'background:rgba(0,119,204,.07);font-weight:600':''}">
+        <td>R$${cv.toFixed(2)}${isBase?' ← atual':''}</td>
+        <td class="neg">${fmtR(cpTrade,2)}</td>
+        <td class="neg">${fmtR(totCost)}</td>
+        <td class="${netV>=0?'pos':'neg'}">${fmtR(netV)}</td>
+        <td class="${diff>=0?'pos':'neg'}">${isBase?'—':(diff>0?'+':'')+fmtR(diff)}</td>
+      </tr>`;
     }).join('');
 
+  const custoPct=d.totalCostAll/Math.max(1,Math.abs(d.totalProfitGross))*100;
   document.getElementById('slipAlert').innerHTML=
-    alertBox(d.netProfit>0&&d.netProfit-10*d.n>0?'g':'y',d.netProfit>0?'✅':'⚠️',
-      `Com ${fmtR(d.costPerTrade,2)} de custo estimado por trade, o lucro líquido projetado é <strong>${fmtR(d.netProfit)}</strong>. `+
-      `${d.costPct<30?'Margem operacional saudável.':'Custos consomem mais de 30% do bruto — verificar corretora e slippage.'}`);
+    alertBox(d.totalProfit>=0?'g':'r',d.totalProfit>=0?'✅':'🚨',
+      `Com R$0,35/contrato/lado, o custo total é <strong>${fmtR(d.totalCostAll)}</strong> (${custoPct.toFixed(1)}% do bruto). `+
+      `Resultado líquido: <strong>${fmtR(d.totalProfit)}</strong>. `+
+      (custoPct>100?'<strong>Os custos superam o resultado bruto — setup inviável operacionalmente.</strong>':
+       custoPct>30?'Custos consomem mais de 30% do bruto — pressão operacional elevada.':
+       'Margem operacional saudável.'));
 }
 
 // ── RELATÓRIO FINAL ──
@@ -1809,7 +1844,8 @@ function renderRelatorio(){
   document.getElementById('finalStars').textContent=stars;
 
   const exec=`O setup <strong style="color:var(--accent)">${d.filename}</strong> é classificado como <strong style="color:var(--text)">${d.classif}</strong>. `+
-    `Com ${d.n} trades no período ${d.startDate}→${d.endDate}, alcançou ${fmtR(d.totalProfit)} bruto, `+
+    `Com ${d.n} trades no período ${d.startDate}→${d.endDate}, resultado bruto ${fmtR(d.totalProfitGross)}, custos ${fmtR(d.totalCostAll)} (R$0,35/contrato/lado), `+
+    `<strong>resultado líquido ${fmtR(d.totalProfit)}</strong>. `+
     `taxa de acerto de ${pct(d.wr)}, Profit Factor de ${fmt(d.pf,2)} e Recovery Factor de ${fmt(d.rf,2)}. `+
     (d.pf>=3&&d.wr>=0.75?'Indicadores de qualidade acima da média — setup robusto para operação continuada.':
      d.pf>=1.5?'Indicadores razoáveis — monitorar consistência temporal.':'Indicadores fracos — revisar parâmetros.');
@@ -1827,7 +1863,8 @@ function renderRelatorio(){
   document.getElementById('rep2').innerHTML=
     hrow(['Métrica','Valor'])+
     row('Lucro bruto',`<span class="pos">${fmtR(d.totalProfit)}</span>`)+
-    row('Lucro líquido estimado',`<span class="pos">${fmtR(d.netProfit)}</span>`)+
+    row('Custos operacionais',`<span class="neg">-${fmtR(d.totalCostAll)}</span>`)+
+    row('Resultado líquido',`<span class="${d.totalProfit>=0?'pos':'neg'}">${fmtR(d.totalProfit)}</span>`)+
     row('Drawdown máximo',`<span class="neg">${fmtR(d.maxDD)}</span>`)+
     row('Taxa de acerto',`<span class="pos">${pct(d.wr)}</span>`)+
     row('Profit Factor',`<span class="${d.pf>=2?'pos':'neu'}">${fmt(d.pf,3)}</span>`)+
