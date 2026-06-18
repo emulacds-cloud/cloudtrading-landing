@@ -99,9 +99,9 @@ h3{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;le
 
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;padding:8px 10px;color:var(--muted2);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border)}
-td{padding:8px 10px;border-bottom:1px solid rgba(28,37,64,.6)}
+td{padding:8px 10px;border-bottom:1px solid rgba(180,190,210,.5)}
 tr:last-child td{border-bottom:none}
-tr:hover td{background:rgba(255,255,255,.02)}
+tr:hover td{background:rgba(0,0,0,.02)}
 td.pos{color:var(--green);font-weight:600}
 td.neg{color:var(--red);font-weight:600}
 td.neu{color:var(--yellow);font-weight:600}
@@ -281,6 +281,18 @@ canvas{max-width:100%}
         <table id="pauseTable"></table>
         <div id="pauseAlert"></div>
       </div>
+
+      <div class="grid g12 mb2" id="fasesRow" style="margin-top:16px">
+        <div class="card">
+          <h3>🔀 Fases Detectadas Automaticamente</h3>
+          <div id="fasesBlock"></div>
+        </div>
+        <div class="card">
+          <h3>💀 Cluster de Losses por Horário</h3>
+          <table id="lossClusterTable"></table>
+          <div id="lossClusterAlert"></div>
+        </div>
+      </div>
     </section>
 
     <!-- DIA DA SEMANA -->
@@ -448,9 +460,9 @@ let A = {}; // analysis results
 let charts = {};
 
 const C = {
-  accent:'#00c2ff',green:'#00e5a0',red:'#ff4d6d',
-  yellow:'#ffd166',purple:'#7b61ff',muted:'#5a6480',
-  bg:'#0f1420',border:'#1c2540'
+  accent:'#0077cc',green:'#0a7c4f',red:'#c0283a',
+  yellow:'#a06000',purple:'#5b3fcf',muted:'#8892b0',
+  bg:'#ffffff',border:'#dde2ee'
 };
 Chart.defaults.color='#5a6480';
 Chart.defaults.borderColor='#dde2ee';
@@ -516,32 +528,90 @@ function parseCSV(text){
 // ══════════════════════ CORE ANALYSIS ══════════════════════
 function analyze(text,filename){
   const rows=parseCSV(text);
-  // Parse saída rows only, deduplicate by (datetime+resultado)
-  const seen=new Set();
-  const trades=[];
-  const entryTimes=[];
+
+  // ── Separar entradas e saídas, deduplicar linhas duplicadas ──
+  const seenSaida=new Set(), seenEntrada=new Set();
+  const exitRows=[], entryRows=[];
   for(const r of rows){
     const tipo=(r[7]||'').toLowerCase();
     const dtStr=(r[1]||'').trim();
-    const res=parseBR(r[12]);
     if(tipo==='entrada'){
+      if(seenEntrada.has(dtStr))continue;
+      seenEntrada.add(dtStr);
       const dt=parseDT(dtStr);
-      if(dt)entryTimes.push(dt);
+      if(dt)entryRows.push({dt,date:fmtDate(dt)});
       continue;
     }
     if(tipo!=='saída'&&tipo!=='saida')continue;
+    const res=parseBR(r[12]);
     if(res===null)continue;
     const dt=parseDT(dtStr);
     if(!dt)continue;
-    const key=dtStr+'|'+r[12];
-    if(seen.has(key))continue;
-    seen.add(key);
-    trades.push({dt,date:fmtDate(dt),hour:dt.getHours(),minute:dt.getMinutes(),
-      resultado:res,weekday:dt.getDay(),month:dt.getMonth()+1,year:dt.getFullYear(),
-      dtStr:dtStr});
+    const key=dtStr+'|'+ r[12];
+    if(seenSaida.has(key))continue;
+    seenSaida.add(key);
+    exitRows.push({dt,date:fmtDate(dt),resultado:res});
+  }
+  exitRows.sort((a,b)=>a.dt-b.dt);
+  entryRows.sort((a,b)=>a.dt-b.dt);
+
+  // ── Parear entrada ↔ saída: para cada saída, achar entrada mais próxima anterior ──
+  const trades=[];
+  const usedEntries=new Set();
+  for(const ex of exitRows){
+    let bestEntry=null,bestIdx=-1;
+    // Buscar entrada no mesmo dia
+    for(let i=0;i<entryRows.length;i++){
+      if(usedEntries.has(i))continue;
+      const en=entryRows[i];
+      if(en.date===ex.date&&en.dt<=ex.dt){
+        if(!bestEntry||en.dt>bestEntry.dt){bestEntry=en;bestIdx=i}
+      }
+    }
+    // Se não achou, buscar no dia anterior (máx 24h)
+    if(!bestEntry){
+      for(let i=0;i<entryRows.length;i++){
+        if(usedEntries.has(i))continue;
+        const en=entryRows[i];
+        const diff=ex.dt-en.dt;
+        if(diff>0&&diff<86400000){
+          if(!bestEntry||en.dt>bestEntry.dt){bestEntry=en;bestIdx=i}
+        }
+      }
+    }
+    if(bestIdx>=0)usedEntries.add(bestIdx);
+    // Horário da ENTRADA para análise de horário
+    const entryDt=bestEntry?bestEntry.dt:ex.dt;
+    const durationMin=bestEntry?Math.round((ex.dt-bestEntry.dt)/6000)/10:0;
+    trades.push({
+      dt:ex.dt,entryDt,
+      date:ex.date,
+      hour:entryDt.getHours(),      // ← ENTRADA
+      minute:entryDt.getMinutes(),  // ← ENTRADA
+      exitHour:ex.dt.getHours(),
+      exitMinute:ex.dt.getMinutes(),
+      resultado:ex.resultado,
+      weekday:ex.dt.getDay(),
+      month:ex.dt.getMonth()+1,
+      year:ex.dt.getFullYear(),
+      durationMin,
+    });
   }
   trades.sort((a,b)=>a.dt-b.dt);
   if(trades.length===0)return {error:'Nenhum trade encontrado. Verifique o formato do CSV.'};
+
+  // Janela operacional = horário de ENTRADA
+  const entryMinutes=trades.map(t=>t.hour*60+t.minute);
+  const winMin=Math.min(...entryMinutes);
+  const winMax=Math.max(...entryMinutes);
+  const winMinH=Math.floor(winMin/60),winMinM=winMin%60;
+  const winMaxH=Math.floor(winMax/60),winMaxM=winMax%60;
+
+  // Duração média dos trades
+  const durations=trades.map(t=>t.durationMin).filter(d=>d>0).sort((a,b)=>a-b);
+  const durationMed=durations.length?durations[Math.floor(durations.length/2)]:0;
+  const durationAvg=durations.length?durations.reduce((a,b)=>a+b,0)/durations.length:0;
+
 
   // ── Basic stats ──
   const results=trades.map(t=>t.resultado);
@@ -574,10 +644,6 @@ function analyze(text,filename){
   }
   const rf=maxDD>0?totalProfit/maxDD:Infinity;
 
-  // Entry window
-  const uniqueEntries=[...new Set(entryTimes.map(d=>d.getHours()*60+d.getMinutes()))];
-  const winMin=uniqueEntries.length?Math.min(...uniqueEntries):0;
-  const winMax=uniqueEntries.length?Math.max(...uniqueEntries):0;
 
   // Daily returns → Sharpe
   const byDate={};
@@ -587,12 +653,61 @@ function analyze(text,filename){
   const stdD=std(dailyRets);
   const sharpe=stdD>0?meanD/stdD:0;
 
-  // By hour
+  // By hour (usando horário de ENTRADA)
   const byHour={};
   for(const t of trades){
-    if(!byHour[t.hour])byHour[t.hour]={n:0,profit:0,wins:0};
+    if(!byHour[t.hour])byHour[t.hour]={n:0,profit:0,wins:0,losses:0,lossVal:0};
     byHour[t.hour].n++;byHour[t.hour].profit+=t.resultado;
     if(t.resultado>0)byHour[t.hour].wins++;
+    else{byHour[t.hour].losses++;byHour[t.hour].lossVal+=t.resultado;}
+  }
+
+  // Cluster de losses por horário (concentração de prejuízo)
+  const lossCluster=Object.entries(byHour)
+    .filter(([h,hd])=>hd.losses>0)
+    .sort((a,b)=>a[1].losses-b[1].losses) // sort asc, worst last
+    .reverse()
+    .map(([h,hd])=>({hour:+h,losses:hd.losses,lossVal:hd.lossVal,
+      pctOfLosses:losses.length>0?hd.losses/losses.length:0}));
+
+  // ── Detecção automática de fases ──
+  // Fases são definidas por mudança no número de contratos OU gaps grandes entre trades
+  // Detecta via quantidade de trades executados (qty) no CSV ou via date gaps
+  const phases=[];
+  if(trades.length>0){
+    // Agrupar trades por fase — detectar mudança de comportamento
+    // Proxy: dividir onde ocorre primeiro loss (se fase 1 tem zero losses)
+    const firstLossIdx=trades.findIndex(t=>t.resultado<0);
+    if(firstLossIdx>5){ // fase 1 significativa
+      const ph1trades=trades.slice(0,firstLossIdx);
+      const ph2trades=trades.slice(firstLossIdx);
+      const ph1R=ph1trades.map(t=>t.resultado);
+      const ph2R=ph2trades.map(t=>t.resultado);
+      const ph1G=ph1R.filter(r=>r>0);const ph1L=ph1R.filter(r=>r<0);
+      const ph2G=ph2R.filter(r=>r>0);const ph2L=ph2R.filter(r=>r<0);
+      phases.push({
+        label:'Fase 1',
+        desc:`${ph1trades[0].date} → ${ph1trades[ph1trades.length-1].date}`,
+        n:ph1trades.length,
+        profit:ph1R.reduce((a,b)=>a+b,0),
+        wins:ph1G.length,losses:ph1L.length,
+        avgGain:ph1G.length?ph1G.reduce((a,b)=>a+b,0)/ph1G.length:0,
+        avgLoss:ph1L.length?Math.abs(ph1L.reduce((a,b)=>a+b,0)/ph1L.length):0,
+        pf:ph1L.length===0?Infinity:ph1G.reduce((a,b)=>a+b,0)/Math.abs(ph1L.reduce((a,b)=>a+b,0)),
+        wr:ph1G.length/ph1trades.length,
+      });
+      phases.push({
+        label:'Fase 2',
+        desc:`${ph2trades[0].date} → ${ph2trades[ph2trades.length-1].date}`,
+        n:ph2trades.length,
+        profit:ph2R.reduce((a,b)=>a+b,0),
+        wins:ph2G.length,losses:ph2L.length,
+        avgGain:ph2G.length?ph2G.reduce((a,b)=>a+b,0)/ph2G.length:0,
+        avgLoss:ph2L.length?Math.abs(ph2L.reduce((a,b)=>a+b,0)/ph2L.length):0,
+        pf:ph2L.length===0?Infinity:ph2G.reduce((a,b)=>a+b,0)/Math.abs(ph2L.reduce((a,b)=>a+b,0)),
+        wr:ph2G.length/ph2trades.length,
+      });
+    }
   }
 
   // By weekday
@@ -617,7 +732,6 @@ function analyze(text,filename){
   const posMonths=monthProfits.filter(p=>p>0).length;
 
   // Progressive cutoff simulation
-  const winMinH=Math.floor(winMin/60),winMinM=winMin%60;
   const winMaxH=Math.floor(winMax/60),winMaxM=winMax%60;
   const cutoffSims=[];
   // Generate cutoff times in 30-min steps within window
@@ -687,7 +801,17 @@ function analyze(text,filename){
   const pGivenG=ggTotal>0?ggCount/ggTotal:wr;
   const pGivenL=lgTotal>0?lgCount/lgTotal:wr;
 
-  // Monthly rolling PF
+  // Rolling PF por número de trades (10 e 20) — mais preciso para setups com 1 trade/dia
+  function rollingPF(tradeList, window){
+    if(tradeList.length<window)return null;
+    const last=tradeList.slice(-window).map(t=>t.resultado);
+    const g=last.filter(r=>r>0);const l=last.filter(r=>r<0);
+    const gSum=g.reduce((a,b)=>a+b,0);const lSum=Math.abs(l.reduce((a,b)=>a+b,0));
+    return lSum>0?gSum/lSum:Infinity;
+  }
+  const rolling10=rollingPF(trades,10);
+  const rolling20=rollingPF(trades,20);
+  // Também manter rolling mensal para tabela de consistência
   const rolling=[];
   if(monthKeys.length>=2){
     for(let i=1;i<monthKeys.length;i++){
@@ -747,7 +871,7 @@ function analyze(text,filename){
   if(posMonths===monthKeys.length)score+=0.5;
   if(mcDDP95<grossLoss*2)score+=0.3;
   // penalties
-  const recentPF=rolling.length>0?rolling[rolling.length-1].pf:pf;
+  const recentPF=rolling20!==null?rolling20:(rolling.length>0?rolling[rolling.length-1].pf:pf);
   if(recentPF<pf*0.8)score-=0.7;
   if(maxLossSeq>4)score-=0.3;
   score=Math.min(10,Math.max(1,Math.round(score*10)/10));
@@ -769,12 +893,13 @@ function analyze(text,filename){
     sharpe,meanD,stdD,byHour,byWD,wdNames,byMonth,monthKeys,monthProfits,posMonths,
     cutoffSims,bestCut,pauseSims,bestPause,
     maxLossSeq,maxWinSeq,lossSeqs,winSeqs,pGivenG,pGivenL,
-    rolling,recentPF,
+    rolling,rolling10,rolling20,recentPF,durationMed,durationAvg,
     mcDDMean,mcDDP95,mcProbDD200,mcProbDD500,mcPerc,
     meanR,stdR,outGains,outLosses,removeScenarios,
     classif,classifDesc,score,
     costPerTrade,totalCost,netProfit,costPct,
     startDate:trades[0].date,endDate:trades[n-1].date,
+    phases,lossCluster,
   };
 }
 
@@ -864,12 +989,22 @@ function renderOverview(){
     row('Gain médio observado',`<span class="pos">${fmtR(d.avgGain,2)}</span>`)+
     row('Loss médio observado',`<span class="neg">${fmtR(d.avgLoss,2)}</span>`)+
     row('Janela operacional',`${fmtTime(d.winMinH,d.winMinM)} → ${fmtTime(d.winMaxH,d.winMaxM)}`)+
+    row('Duração mediana dos trades',d.durationMed>0?`${d.durationMed} min`:'N/D')+
     row('Taxa mínima de breakeven',pct(d.breakEvenWR));
 
+  const phaseSummary=d.phases&&d.phases.length>0?
+    `<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">Fases detectadas</div>
+      ${d.phases.map(ph=>`<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;margin-right:12px;margin-bottom:4px">
+        <span style="width:8px;height:8px;border-radius:50%;background:${ph.losses===0?'var(--green)':'var(--yellow)'}"></span>
+        <strong>${ph.label}</strong> — ${ph.n} trades · ${pct(ph.wr)} acerto · ${ph.losses===0?'zero losses':''+ph.losses+' losses'}
+      </span>`).join('')}
+    </div>`:'';
   document.getElementById('classifBlock').innerHTML=`
     <div style="margin-bottom:14px">${badge(d.classif,'p')} ${d.wr>0.7?badge('Alta Precisão','g'):''}</div>
     <p style="color:var(--muted);font-size:13px;line-height:1.75">${d.classifDesc}</p>
     ${alertBox('g','✅','<strong>Distribuição identificada:</strong> '+distType(d))}
+    ${phaseSummary}
   `;
 }
 
@@ -914,7 +1049,7 @@ function renderCurveChart(){
     data:{labels,datasets:[{
       label:'Capital',data:caps,borderColor:C.accent,borderWidth:2,
       pointBackgroundColor:ptColors,pointRadius:4,pointHoverRadius:6,
-      fill:true,backgroundColor:'rgba(0,194,255,0.05)',tension:0.1
+      fill:true,backgroundColor:'rgba(0,119,204,0.06)',tension:0.1
     }]},
     options:{responsive:true,maintainAspectRatio:false,
       plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`Capital: ${fmtR(caps[ctx.dataIndex])} | Trade: ${fmtR(A.results[ctx.dataIndex])}`}}},
@@ -991,6 +1126,67 @@ function renderHorarios(){
         `<strong>Pausa recomendada: ${bestP.label}</strong> — aumenta o lucro para ${fmtR(bestP.profit)} eliminando ${bestP.removed} trades negativos (${fmtR(bestP.lostProfit)}).`:
         `<strong>Melhor pausa disponível: ${bestP.label}</strong> — todos os blocos contêm trades positivos. Não há pausa que melhore significativamente o resultado.`):'';
 }
+
+  // ── Fases detectadas ──
+  const fasesEl=document.getElementById('fasesBlock');
+  if(!d.phases||d.phases.length===0){
+    fasesEl.innerHTML=alertBox('a','ℹ️','Nenhuma mudança de fase detectada — setup operou de forma uniforme no período.');
+  } else {
+    const phColors=['#0077cc','#0a7c4f','#5b3fcf'];
+    fasesEl.innerHTML=d.phases.map((ph,pidx)=>{
+      const col=phColors[pidx]||'#888';
+      const wrCls=ph.wr>=0.9?'pos':ph.wr>=0.7?'neu':'neg';
+      const pfLbl=ph.pf===Infinity?'∞':fmt(ph.pf,2);
+      const payoffLbl=ph.avgLoss>0?fmt(ph.avgGain/ph.avgLoss,2):'∞';
+      return `<div style="border-left:3px solid ${col};padding:10px 14px;margin-bottom:12px;background:rgba(0,0,0,.025);border-radius:0 6px 6px 0">
+        <div style="font-weight:700;font-size:13px;color:var(--text);margin-bottom:8px">${ph.label}
+          <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:6px">${ph.desc}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px 8px;font-size:12px">
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Trades</div><strong>${ph.n}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Lucro</div><strong style="color:${ph.profit>=0?'var(--green)':'var(--red)'}">${fmtR(ph.profit)}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Acerto</div><strong style="color:${ph.wr>=0.9?'var(--green)':ph.wr>=0.7?'var(--yellow)':'var(--red)'}">${pct(ph.wr)}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">PF</div><strong style="color:${ph.pf>=2?'var(--green)':ph.pf>=1.3?'var(--yellow)':'var(--red)'}">${pfLbl}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Losses</div><strong style="color:${ph.losses===0?'var(--green)':'var(--red)'}">${ph.losses}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Gain médio</div><strong style="color:var(--green)">${fmtR(ph.avgGain,2)}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Loss médio</div><strong style="color:${ph.avgLoss>0?'var(--red)':'var(--green)'}">${ph.avgLoss>0?fmtR(ph.avgLoss,2):'—'}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Payoff</div><strong>${payoffLbl}</strong></div>
+        </div>
+      </div>`;
+    }).join('');
+    const ph1=d.phases[0],ph2=d.phases.length>1?d.phases[1]:null;
+    if(ph1.losses===0&&ph2&&ph2.losses>0){
+      fasesEl.innerHTML+=alertBox('y','⚠️',`<strong>Transição de fase detectada:</strong> A Fase 1 operou ${ph1.n} trades com <strong>zero losses</strong>. Na Fase 2 surgiram ${ph2.losses} losses. Investigar se houve mudança de parâmetros (gain/loss/contratos) ou mudança de regime de mercado.`);
+    }
+  }
+
+  // ── Cluster de losses por horário ──
+  const clTableEl=document.getElementById('lossClusterTable');
+  const clAlertEl=document.getElementById('lossClusterAlert');
+  if(!d.lossCluster||d.lossCluster.length===0){
+    if(clTableEl)clTableEl.innerHTML='';
+    if(clAlertEl)clAlertEl.innerHTML=alertBox('g','✅','Nenhum loss registrado — sem cluster de perdas a reportar.');
+  } else {
+    const totalLosses=d.losses.length;
+    if(clTableEl)clTableEl.innerHTML=
+      hrow(['Hora (entrada)','Losses','% dos losses','Prejuízo','Lucro hora','Status'])+
+      d.lossCluster.map(cl=>{
+        const hd=d.byHour[cl.hour]||{profit:0};
+        const isMajor=cl.pctOfLosses>=0.35;
+        return trow([
+          `${cl.hour}h`,
+          {v:String(cl.losses),cls:'neg'},
+          {v:pct(cl.pctOfLosses),cls:isMajor?'neg':'neu'},
+          {v:fmtR(cl.lossVal),cls:'neg'},
+          {v:fmtR(hd.profit),cls:hd.profit>=0?'pos':'neg'},
+          isMajor?badge('Candidato a bloqueio','r'):badge('Monitorar','y'),
+        ]);
+      }).join('');
+    if(clAlertEl)clAlertEl.innerHTML=alertBox('r','💀',
+      `<strong>Horário ${d.lossCluster[0].hour}h</strong> concentra <strong>${pct(d.lossCluster[0].pctOfLosses)}</strong> dos losses `+
+      `(${d.lossCluster[0].losses} de ${totalLosses}) — prejuízo total de ${fmtR(d.lossCluster[0].lossVal)}. `+
+      `Candidato prioritário a bloqueio ou pausa intraday.`);
+  }
 
 // ── SEMANA ──
 function renderSemana(){
@@ -1111,31 +1307,49 @@ function renderTemporal(){
     return kpiCard(k,fmtR(m.profit),`${m.n} trades · ${pct(wr2)} acerto`,m.profit>=0?'g':'r',bdr);
   }).join('');
 
+  // Rolling-10 e rolling-20 status
+  const r10ok=d.rolling10===null||d.rolling10>=d.pf*0.8;
+  const r20ok=d.rolling20===null||d.rolling20>=d.pf*0.8;
+  const r10lbl=d.rolling10===null?'Poucos trades':(d.rolling10===Infinity?'∞':fmt(d.rolling10,2));
+  const r20lbl=d.rolling20===null?'Poucos trades':(d.rolling20===Infinity?'∞':fmt(d.rolling20,2));
+
   document.getElementById('tempSummary').innerHTML=
     hrow(['Indicador','Valor'])+
     row('Meses positivos',`<span class="pos">${d.posMonths}/${d.monthKeys.length} (${pct(d.posMonths/d.monthKeys.length)})</span>`)+
     row('Melhor mês',`<span class="pos">${d.monthKeys[d.monthProfits.indexOf(Math.max(...d.monthProfits))]} (${fmtR(Math.max(...d.monthProfits))})</span>`)+
     row('Pior mês',`<span class="${Math.min(...d.monthProfits)<0?'neg':'pos'}">${d.monthKeys[d.monthProfits.indexOf(Math.min(...d.monthProfits))]} (${fmtR(Math.min(...d.monthProfits))})</span>`)+
-    row('PF histórico global',`<span class="${A.pf>=2?'pos':'neu'}">${fmt(A.pf,3)}</span>`)+
-    row('PF janela recente',`<span class="${d.recentPF>=2?'pos':d.recentPF>=1.3?'neu':'neg'}">${d.rolling.length>0?fmt(d.rolling[d.rolling.length-1].pf,3):'—'}</span>`);
+    row('PF histórico global',`<span class="${d.pf>=2?'pos':'neu'}">${fmt(d.pf,3)}</span>`)+
+    row('<strong>PF Rolling-10</strong> (últimas 10 ops)',`<span class="${r10ok?'pos':'neg'}">${r10lbl}${!r10ok?' ⚠️':''}</span>`)+
+    row('<strong>PF Rolling-20</strong> (últimas 20 ops)',`<span class="${r20ok?'pos':'neg'}">${r20lbl}${!r20ok?' 🚨':''}</span>`)+
+    row('Alerta dispara quando',`PF rolling &lt; ${fmt(d.pf*0.8,2)} (80% do histórico)`);
 
-  const degrading=d.rolling.length>0&&d.rolling[d.rolling.length-1].pf<d.pf*0.8;
+  const degrading20=d.rolling20!==null&&d.rolling20<d.pf*0.8;
+  const degrading10=d.rolling10!==null&&d.rolling10<d.pf*0.8;
   document.getElementById('tempAlert').innerHTML=
-    alertBox(degrading?'r':'g',degrading?'🚨':'✅',
-      degrading?`<strong>Alerta de degradação:</strong> O PF da janela recente (${fmt(d.rolling[d.rolling.length-1].pf,3)}) está abaixo de 80% do PF histórico (${fmt(d.pf,3)} × 0,8 = ${fmt(d.pf*0.8,3)}). Monitorar nas próximas semanas.`:
-        `Setup mantém consistência temporal. O PF das janelas recentes não apresenta degradação relevante.`);
+    degrading20?alertBox('r','🚨',`<strong>Alerta ativo — Rolling-20:</strong> PF das últimas 20 operações (${r20lbl}) está ${pct(1-d.rolling20/d.pf)} abaixo do PF histórico. Threshold de alerta: ${fmt(d.pf*0.8,2)}.`+(degrading10?` Rolling-10 também em alerta (${r10lbl}).`:'')):
+    degrading10?alertBox('y','⚠️',`<strong>Atenção — Rolling-10:</strong> PF das últimas 10 operações (${r10lbl}) abaixo de 80% do histórico. Rolling-20 ainda OK (${r20lbl}). Monitorar.`):
+    alertBox('g','✅',`Setup estável. PF Rolling-20: ${r20lbl} · PF Rolling-10: ${r10lbl} · Ambos acima de 80% do histórico.`);
 
   document.getElementById('rollingTable').innerHTML=
-    hrow(['Período','Trades','Lucro','PF Rolling','Status'])+
+    hrow(['Janela','Trades','PF','Limiar alerta','Status'])+
+    trow(['Rolling-10 (últimas 10 ops)',Math.min(10,d.n),
+      {v:r10lbl,cls:r10ok?'pos':'neg'},
+      {v:fmt(d.pf*0.8,2),cls:''},
+      r10ok?badge('ESTÁVEL','g'):badge('ALERTA','r')])+
+    trow(['Rolling-20 (últimas 20 ops)',Math.min(20,d.n),
+      {v:r20lbl,cls:r20ok?'pos':'neg'},
+      {v:fmt(d.pf*0.8,2),cls:''},
+      r20ok?badge('ESTÁVEL','g'):badge('ALERTA','r')])+
+    '<tr><td colspan="5" style="padding-top:12px;font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Rolling Mensal</td></tr>'+
     d.rolling.map(r=>{
       const pct2=r.pf/d.pf;
       const st=pct2>=0.8?badge('ESTÁVEL','g'):pct2>=0.5?badge('ATENÇÃO','y'):badge('QUEDA','r');
-      return trow([r.label,r.n,{v:fmtR(r.profit),cls:'pos'},{v:r.pf===Infinity?'∞':fmt(r.pf,3),cls:r.pf>=2?'pos':r.pf>=1.3?'neu':'neg'},st]);
+      return trow([r.label,r.n,{v:r.pf===Infinity?'∞':fmt(r.pf,3),cls:r.pf>=2?'pos':r.pf>=1.3?'neu':'neg'},{v:fmt(d.pf*0.8,2)},st]);
     }).join('')+
-    (d.rolling.length===0?trow(['Histórico muito curto para rolling window','—','—','—','—']):'');
+    (d.rolling.length===0?trow(['Histórico muito curto','—','—','—','—']):'');
 
   document.getElementById('rollingAlert').innerHTML=
-    alertBox('a','📊',`Alerta de alerta automático: PF rolling &lt; ${fmt(d.pf*0.8,3)} = sinal de degradação (80% do PF histórico).`);
+    alertBox('a','💡','<strong>Como ler:</strong> Rolling-20 é o indicador principal de degradação — mais estável que Rolling-10. Rolling-10 serve como alerta precoce. Se Rolling-20 cair abaixo do limiar, considere pausar o robô para revisão.');
 }
 
 function renderMonthChart(){
@@ -1316,7 +1530,8 @@ function renderRelatorio(){
     row('Autocorrelação',Math.abs(d.pGivenG-d.wr)<0.1&&Math.abs(d.pGivenL-d.wr)<0.1?'<span class="pos">Praticamente nula</span>':'<span class="neu">Leve dependência</span>')+
     row('% meses positivos',`<span class="${d.posMonths===d.monthKeys.length?'pos':'neu'}">${pct(d.posMonths/d.monthKeys.length)}</span>`)+
     row('Maior seq. losses',`<span class="${d.maxLossSeq<=2?'pos':'neg'}">${d.maxLossSeq} trades</span>`)+
-    row('PF janela recente',d.rolling.length>0?`<span class="${d.recentPF>=d.pf*0.8?'pos':'neg'}">${fmt(d.recentPF,3)}${d.recentPF<d.pf*0.8?' ⚠️':''}</span>`:'<span class="neu">Poucos meses</span>');
+    row('PF Rolling-20',d.rolling20!==null?`<span class="${d.rolling20>=d.pf*0.8?'pos':'neg'}">${d.rolling20===Infinity?'∞':fmt(d.rolling20,2)}${d.rolling20<d.pf*0.8?' 🚨':''}</span>`:'<span class="neu">Poucos trades</span>')+
+    row('PF Rolling-10',d.rolling10!==null?`<span class="${d.rolling10>=d.pf*0.8?'pos':'neg'}">${d.rolling10===Infinity?'∞':fmt(d.rolling10,2)}${d.rolling10<d.pf*0.8?' ⚠️':''}</span>`:'<span class="neu">Poucos trades</span>');
 
   document.getElementById('rep4').innerHTML=
     hrow(['Otimização','Valor'])+
@@ -1342,7 +1557,8 @@ function renderRelatorio(){
   // Weaknesses
   const wk=[];
   if(d.payoff<0.8)wk.push({t:'r',v:`Payoff invertido (${fmt(d.payoff,3)}) — cada loss custa ${fmt(1/d.payoff,1)}x mais que cada gain. Exige manutenção do acerto elevado`});
-  if(d.recentPF<d.pf*0.8&&d.rolling.length>0)wk.push({t:'r',v:`PF janela recente (${fmt(d.recentPF,3)}) abaixo de 80% do histórico — possível início de degradação`});
+  if(d.rolling20!==null&&d.rolling20<d.pf*0.8)wk.push({t:'r',v:`PF Rolling-20 (${d.rolling20===Infinity?'∞':fmt(d.rolling20,2)}) abaixo de 80% do histórico — sinal de degradação ativo nas últimas 20 operações`});
+  else if(d.rolling10!==null&&d.rolling10<d.pf*0.8)wk.push({t:'y',v:`PF Rolling-10 (${d.rolling10===Infinity?'∞':fmt(d.rolling10,2)}) abaixo de 80% do histórico — alerta precoce, monitorar Rolling-20`});
   if(d.sharpe<1)wk.push({t:'y',v:`Sharpe ${fmt(d.sharpe,3)} abaixo de 1,0 — variabilidade diária moderada (esperada para 1 trade/dia)`});
   if(d.n<50)wk.push({t:'y',v:`Amostra de ${d.n} trades — histórico curto para conclusões definitivas. Recomendado mínimo de 100+ trades`});
   if(d.maxLossSeq>=3)wk.push({t:'r',v:`Sequência máxima de ${d.maxLossSeq} losses consecutivos — avaliar regra de pausa`});
@@ -1353,7 +1569,7 @@ function renderRelatorio(){
   const recs=[];
   if(d.bestCut)recs.push({t:'g',v:`<strong>Corte de entradas às ${d.bestCut.label}:</strong> Melhor relação lucro/DD/acerto. ${d.bestCut.n} trades com ${pct(d.bestCut.wr)} de acerto e DD de ${fmtR(d.bestCut.dd)}.`});
   if(d.bestPause&&d.bestPause.lostProfit<0)recs.push({t:'g',v:`<strong>Pausa ${d.bestPause.label}:</strong> Bloquear entradas nesse período melhora o setup sem custo de oportunidade.`});
-  recs.push({t:'y',v:`<strong>Monitorar PF rolling:</strong> Implementar alerta automático se PF dos últimos 20 trades cair abaixo de ${fmt(d.pf*0.8,2)} (80% do histórico).`});
+  recs.push({t:'y',v:`<strong>Monitorar PF Rolling-20 semanalmente:</strong> Alerta dispara quando PF das últimas 20 operações cair abaixo de ${fmt(d.pf*0.8,2)} (80% do histórico). Rolling-10 serve como alerta precoce.`});
   if(d.recentPF<d.pf*0.8&&d.rolling.length>0)recs.push({t:'r',v:`<strong>Atenção imediata:</strong> PF recente em queda. Revisar se houve mudança de regime ou parâmetros.`});
   if(d.n<80)recs.push({t:'a',v:`<strong>Ampliar histórico:</strong> Com ${d.n} trades, os indicadores estatísticos ainda têm margem de erro relevante. Aguardar 100+ trades para conclusões definitivas.`});
   recs.push({t:'a',v:`<strong>Escalonamento gradual:</strong> Com RF de ${fmt(d.rf,2)} e Monte Carlo sólido, o setup suporta escalonamento conservador quando o histórico confirmar estabilidade.`});
