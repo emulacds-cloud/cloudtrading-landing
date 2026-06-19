@@ -458,6 +458,10 @@ tbody td:first-child{text-align:left;color:var(--muted2)}
       <input class="opt-input" type="number" id="minTrades" value="100" min="10" max="9999" style="width:80px">
       <span class="opt-label" title="Max Drawdown máximo permitido por setup. Protege contra setups com perdas extremas que assustam o cliente.">Max DD ⓘ:</span>
       <input class="opt-input" type="number" id="maxDDCap" value="500" min="100" max="5000" step="50" style="width:80px">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-family:var(--mono);font-size:11px;color:var(--text);background:var(--s1);border:1px solid var(--border);border-radius:4px;padding:5px 10px" title="Exige que cada setup individual não tenha nenhum mês negativo no período analisado">
+        <input type="checkbox" id="zeroNegMonths" style="width:14px;height:14px;cursor:pointer">
+        Zero meses negativos
+      </label>
       <button class="btn btn-g" id="runOptBtn">▶ Otimizar</button>
     </div>
 
@@ -1541,13 +1545,14 @@ async function runOptimizer() {
   const maxC      = parseFloat($('maxCorrThresh').value) || 0.6;
   const minTrades = parseInt($('minTrades').value) || 0;
   const maxDDCap  = parseFloat($('maxDDCap').value) || 500;
+  const zeroNeg   = $('zeroNegMonths').checked;
 
   if (S.setups.length < n) { alert('Carregue mais setups primeiro.'); return; }
 
   $('optResult').style.display = 'none';
   $('optProgress').style.display = 'block';
 
-  // Filtro base + mínimo de trades + sanidade + Max DD cap + exclusões manuais
+  // Filtro base + mínimo de trades + sanidade + Max DD cap + zero meses negativos + exclusões manuais
   const filtered = S.setups.filter(m =>
     m.pct_pos      >= 0.60  &&
     m.sharpe       >= 1.5   &&
@@ -1555,7 +1560,8 @@ async function runOptimizer() {
     m.worst_month  > -2000  &&
     m.annual_return > 0     &&
     m.n_trades     >= minTrades &&
-    Math.abs(m.max_dd) <= maxDDCap &&   // ← Max DD cap
+    Math.abs(m.max_dd) <= maxDDCap &&
+    (!zeroNeg || m.neg_months === 0) &&
     !m.sanity_warn  &&
     !S.excluded.has(m.name)
   );
@@ -1564,6 +1570,7 @@ async function runOptimizer() {
     m.pct_pos >= 0.60 && m.sharpe >= 1.5 &&
     m.payoff >= 1.0 && m.worst_month > -2000 &&
     m.annual_return > 0 && m.n_trades < minTrades &&
+    (!zeroNeg || m.neg_months === 0) &&
     !m.sanity_warn && !S.excluded.has(m.name)
   );
 
@@ -1579,6 +1586,14 @@ async function runOptimizer() {
     m.payoff >= 1.0 && m.annual_return > 0 &&
     !m.sanity_warn && !S.excluded.has(m.name)
   );
+
+  const rejectedByNegMonths = zeroNeg ? S.setups.filter(m =>
+    m.neg_months > 0 &&
+    m.pct_pos >= 0.60 && m.sharpe >= 1.5 &&
+    m.payoff >= 1.0 && m.annual_return > 0 &&
+    m.n_trades >= minTrades && Math.abs(m.max_dd) <= maxDDCap &&
+    !m.sanity_warn && !S.excluded.has(m.name)
+  ) : [];
 
   if (filtered.length < n) {
     $('optProgress').style.display = 'none';
@@ -1603,11 +1618,14 @@ async function runOptimizer() {
   const ddMsg = rejectedByDD.length > 0
     ? ` · <span style="color:var(--y)">📉 ${rejectedByDD.length} excluídos por Max DD > ${maxDDCap}</span>`
     : '';
+  const negMsg = rejectedByNegMonths.length > 0
+    ? ` · <span style="color:var(--y)">📅 ${rejectedByNegMonths.length} excluídos por meses negativos</span>`
+    : '';
   const exclMsg = S.excluded.size > 0
     ? ` · <span style="color:var(--r)">⊘ ${S.excluded.size} excluídos manualmente</span>`
     : '';
-  fi.innerHTML = `Filtros: Sharpe ≥ 1,5 · Payoff ≥ 1,0 · Trades ≥ <strong>${minTrades}</strong> · Max DD ≤ <strong>${maxDDCap}</strong>
-  &nbsp;→ <strong>${filtered.length} qualificados</strong> de ${S.setups.length} totais${rejMsg}${sanityMsg}${ddMsg}${exclMsg}`;
+  fi.innerHTML = `Filtros: Sharpe ≥ 1,5 · Payoff ≥ 1,0 · Trades ≥ <strong>${minTrades}</strong> · Max DD ≤ <strong>${maxDDCap}</strong>${zeroNeg ? ' · <strong>Zero meses negativos</strong>' : ''}
+  &nbsp;→ <strong>${filtered.length} qualificados</strong> de ${S.setups.length} totais${rejMsg}${sanityMsg}${ddMsg}${negMsg}${exclMsg}`;
 
   // Pre-compute correlation matrix
   const N = candidates.length;
