@@ -322,7 +322,6 @@ tbody td:first-child{text-align:left;color:var(--muted2)}
     <div class="tb-tab" data-tab="targets">⑤ Targets</div>
     <div class="tb-tab" data-tab="consistencia">⑥ Consistência</div>
     <div class="tb-tab" data-tab="smarttbot">⑦ SmartTBot</div>
-    <div class="tb-tab" data-tab="analisar">⑧ Analisar</div>
   </div>
   <div class="tb-status">
     <span id="statusDot"></span>
@@ -343,9 +342,11 @@ tbody td:first-child{text-align:left;color:var(--muted2)}
       Use os botões abaixo para carregar.<br>
       No iPad, toque em <strong>Carregar ZIP</strong> e selecione o arquivo nos Arquivos.<br><br>
       Suporta <strong>arquivo ZIP</strong> contendo os JSONs de backtest<br>
-      ou <strong>múltiplos JSONs</strong> individuais selecionados de uma vez.
+      ou <strong>múltiplos JSONs</strong> individuais selecionados de uma vez.<br><br>
+      Formato esperado: <code style="color:var(--g)">{"orders":[{"datetime":"...","gross_profit":"..."}]}</code>
     </p>
     <div id="loadButtons">
+      <!-- iOS/iPad: label wrapping input is the only reliable way to trigger file picker -->
       <label for="fileInputZip" class="btn btn-g" style="cursor:pointer">
         📦 Carregar ZIP
       </label>
@@ -401,7 +402,7 @@ tbody td:first-child{text-align:left;color:var(--muted2)}
             <th data-col="lateral_months">Lateral</th>
             <th data-col="max_consec">Consec+</th>
             <th data-col="win_rate">Win Rate</th>
-            <th data-col="robust_score" title="Score de Robustez 0-100: WF+Regime+Estab+TW+CV">Robusto</th><th data-col="profit_factor">Fator L.</th><th data-col="payoff">Payoff</th>
+            <th data-col="payoff">Payoff</th>
             <th data-col="max_dd">Max DD</th>
             <th data-col="max_dd_streak">DD Streak</th>
             <th data-col="neg_days">Dias−</th>
@@ -457,8 +458,6 @@ tbody td:first-child{text-align:left;color:var(--muted2)}
       <input class="opt-input" type="number" id="minTrades" value="100" min="10" max="9999" style="width:80px">
       <span class="opt-label" title="Max Drawdown máximo permitido por setup. Protege contra setups com perdas extremas que assustam o cliente.">Max DD ⓘ:</span>
       <input class="opt-input" type="number" id="maxDDCap" value="500" min="100" max="5000" step="50" style="width:80px">
-      <span class="opt-label" title="Score de Robustez mínimo (0-100). Substitui os critérios binários — cada dimensão contribui parcialmente. 0=sem filtro, 40=flexível, 60=padrão, 80=rígido.">Robusto ⓘ:</span>
-      <input class="opt-input" type="number" id="minRobust" value="40" min="0" max="100" step="5" style="width:60px">
       <button class="btn btn-g" id="runOptBtn">▶ Otimizar</button>
     </div>
 
@@ -820,91 +819,6 @@ tbody td:first-child{text-align:left;color:var(--muted2)}
 
 </main>
 
-<!-- ══════════════════════════════════════════════════════════
-     PAGE 8 — ANALISAR CARTEIRA
-════════════════════════════════════════════════════════════ -->
-<div class="page" id="page-analisar">
-  <div class="sec">
-    <div class="sec-hd">
-      <h2>Analisar Carteira Existente</h2>
-      <p style="font-size:12px;color:var(--muted2);margin:0">
-        Selecione até 4 setups e clique em Analisar.
-      </p>
-    </div>
-
-    <!-- Carregar ZIP diretamente aqui -->
-    <div id="anlLoadArea" style="margin-bottom:16px;padding:14px 16px;background:var(--s1);border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <label for="anlZipInput" class="btn btn-g" style="cursor:pointer;font-size:12px">
-        📦 Carregar ZIP de Backtests
-      </label>
-      <input type="file" id="anlZipInput" accept=".zip" style="display:none">
-      <span id="anlLoadStatus" style="font-size:11px;color:var(--muted2)">
-        Carregue o ZIP para ver os setups disponíveis
-      </span>
-    </div>
-
-    <!-- Barra de seleção -->
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
-      <div style="font-size:12px;color:var(--muted2)">
-        Selecionados: <span id="anlSelCount" style="font-weight:700;color:var(--text)">0</span>/4
-      </div>
-      <div id="anlSelNames" style="display:flex;gap:6px;flex-wrap:wrap;flex:1"></div>
-      <button class="btn btn-outline btn-sm" id="anlClearBtn">✕ Limpar</button>
-      <button class="btn btn-outline btn-sm" id="anlFromOptBtn">Usar Otimizador</button>
-    </div>
-
-    <!-- Botão analisar -->
-    <div style="margin-bottom:16px">
-      <button class="btn btn-g" id="anlRunBtn" style="padding:10px 28px">
-        🔍 Analisar Carteira Selecionada
-      </button>
-      <span id="anlRunMsg" style="font-size:11px;color:var(--r);margin-left:10px"></span>
-    </div>
-
-    <!-- Busca + filtro -->
-    <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
-      <input id="anlSearch" type="text" placeholder="🔍 Filtrar por nome..."
-        style="flex:1;background:var(--s1);border:1px solid var(--border);border-radius:4px;
-        padding:7px 12px;color:var(--text);font-size:12px;font-family:var(--mono)">
-      <select id="anlSort" style="background:var(--s1);border:1px solid var(--border);border-radius:4px;
-        padding:7px 10px;color:var(--text);font-size:12px">
-        <option value="score">Score ↓</option>
-        <option value="sharpe">Sharpe ↓</option>
-        <option value="robust">Robusto ↓</option>
-        <option value="name">Nome A-Z</option>
-      </select>
-    </div>
-
-    <!-- Lista de setups para selecionar -->
-    <div id="anlEmpty" class="empty">
-      <div class="icon">📦</div>
-      Carregue os backtests para ver os setups disponíveis
-    </div>
-    <div id="anlSetupList" style="display:none;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-bottom:20px;max-height:420px;overflow-y:auto"></div>
-
-    <!-- Resultado da análise -->
-    <div id="anlContent" style="display:none">
-      <div id="anlCards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px"></div>
-      <div class="sec-hd" style="margin-bottom:8px">
-        <h3 style="font-size:13px;margin:0">Correlação da Carteira</h3>
-        <span id="anlCorrSummary" style="font-size:11px;color:var(--muted2)"></span>
-      </div>
-      <div id="anlCorrMatrix" style="margin-bottom:20px;overflow-x:auto"></div>
-      <div class="sec-hd" style="margin-bottom:8px">
-        <h3 style="font-size:13px;margin:0">Portfolio Combinado</h3>
-      </div>
-      <div id="anlPortKpis" style="margin-bottom:12px"></div>
-      <div id="anlMonthly" style="margin-bottom:20px"></div>
-      <div id="anlConsistencia" style="margin-bottom:20px"></div>
-      <div class="sec-hd" style="margin-bottom:8px">
-        <h3 style="font-size:13px;margin:0">⚡ Sugestão de Substituição</h3>
-      </div>
-      <div id="anlSugestao"></div>
-    </div>
-  </div>
-</div>
-
-
 <style>
 /* ── SMARTTBOT PAGE ── */
 .stb-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
@@ -1096,8 +1010,6 @@ async function handleFiles(files) {
   if (n > 0) {
     $('analyzeBtn').style.display = 'inline-flex';
     setStatus(`${n} backtest(s) prontos para análise`, 'ok');
-    // Auto-analisa sem precisar clicar no botão
-    setTimeout(analyzeAll, 300);
   } else {
     setStatus('Nenhum backtest encontrado — verifique o arquivo', 'err');
     addRow(list, '⚠ Nenhum JSON de backtest encontrado', 'file-warn',
@@ -1246,8 +1158,8 @@ function parseOrders(data) {
     if (!o.datetime || o.gross_profit == null) continue;
     const gp = parseFloat(o.gross_profit);
     if (isNaN(gp)) continue;
-    const month = o.datetime.substring(0, 7);
-    const day   = o.datetime.substring(0, 10);
+    const month = o.datetime.substring(0, 7);   // "YYYY-MM"
+    const day   = o.datetime.substring(0, 10);  // "YYYY-MM-DD"
     monthly[month] = (monthly[month] || 0) + gp;
     daily[day]     = (daily[day]     || 0) + gp;
     total++;
@@ -1255,187 +1167,129 @@ function parseOrders(data) {
     else if (gp < 0) { lossAmts.push(Math.abs(gp)); }
   }
 
-  const avgWin    = winAmts.length  ? mean(winAmts)  : 0;
-  const avgLoss   = lossAmts.length ? mean(lossAmts) : 1;
-  const totalWins = winAmts.reduce((a,b)=>a+b,0);
-  const totalLoss = lossAmts.reduce((a,b)=>a+b,0);
-  // Fator de lucro = lucro bruto / prejuízo bruto (como o SmartTBot mostra)
-  const profitFactor = totalLoss > 0 ? totalWins / totalLoss : (totalWins > 0 ? 99 : 0);
+  const avgWin  = winAmts.length  ? mean(winAmts)  : 0;
+  const avgLoss = lossAmts.length ? mean(lossAmts) : 1;
 
-  return { monthly, daily, wins, total, avgWin, avgLoss, profitFactor };
+  return { monthly, daily, wins, total, avgWin, avgLoss };
 }
 
-function computeMetrics(name, monthly, daily, wins, total, avgWin, avgLoss, profitFactor) {
+function computeMetrics(name, monthly, daily, wins, total, avgWin, avgLoss) {
   const keys = Object.keys(monthly).sort();
-  if (keys.length < 18) return null;
+  if (keys.length < 6) return null;
 
-  // ── FILTROS DE SANIDADE (eliminação total — dados inválidos) ──
+  // ── FILTROS DE SANIDADE — detecta dados corrompidos/impossíveis ──
   const losses = total - wins;
-  const pf = profitFactor || 0;
+  const payoffRaw = avgLoss > 0 ? avgWin / avgLoss : 0;
+
+  // 1. Zero perdas com muitos trades = overfitting extremo ou dados corrompidos
   if (losses === 0 && total >= 30) return null;
-  if (pf > 50 && total >= 30) return null;
+
+  // 2. Payoff impossível (>15) = dados corrompidos
+  if (payoffRaw > 15 && total >= 30) return null;
+
+  // 3. Win rate de 100% com mais de 50 trades = impossível na prática
   if (total >= 50 && wins === total) return null;
+
+  // 4. Retorno total negativo com win rate > 90% = inconsistência matemática
   const totalRet = Object.values(monthly).reduce((a,b)=>a+b,0);
   if (totalRet < 0 && wins/total > 0.90) return null;
-  if (totalRet <= 0) return null; // retorno total negativo — sem utilidade
+  // ── FIM FILTROS DE SANIDADE ──
 
-  const useKeys   = keys.slice(-24);
-  const ret       = useKeys.map(k => monthly[k]);
-  const retTrain  = ret.slice(0, 18);
-  const retTest   = ret.slice(18);
+  // Use last 24 months
+  const useKeys = keys.slice(-24);
+  const ret = useKeys.map(k => monthly[k]);
 
-  // ── SCORE DE ROBUSTEZ (0-100) — substituição dos critérios binários ──
-  // Cada dimensão gera uma nota parcial. Mínimo configurável no otimizador.
-
-  // 1. Walk-Forward (0-25 pts)
-  const sumTrain = retTrain.reduce((a,b)=>a+b,0);
-  const sumTest  = retTest.length ? retTest.reduce((a,b)=>a+b,0) : 0;
-  const posTest  = retTest.length ? retTest.filter(r=>r>0).length / retTest.length : 0;
-  let wfScore = 0;
-  if (sumTrain > 0 && sumTest > 0) {
-    // posTest: 50%=base, 70%=bom, 100%=perfeito
-    wfScore = Math.min(25, Math.max(0, (posTest - 0.33) / 0.67 * 25));
-  }
-  // Treino negativo = score zero nesta dimensão (mas não elimina)
-
-  // 2. Regime de volatilidade (0-25 pts)
-  const cutoff    = useKeys[0];
-  const dailyVals = Object.entries(daily)
-    .filter(([d]) => d.substring(0,7) >= cutoff)
-    .map(([,v]) => v);
-  let meanHV = 0, meanLV = 0, regimeScore = 0;
-  if (dailyVals.length) {
-    const absVals = dailyVals.map(Math.abs).sort((a,b)=>a-b);
-    const medVol  = absVals[Math.floor(absVals.length/2)];
-    const hvDays  = dailyVals.filter(v => Math.abs(v) > medVol);
-    const lvDays  = dailyVals.filter(v => Math.abs(v) <= medVol);
-    meanHV = hvDays.length ? mean(hvDays) : 0;
-    meanLV = lvDays.length ? mean(lvDays) : 0;
-    // Ambos positivos = 25pts; um negativo = proporcional; ambos negativos = 0
-    const hvNorm = Math.max(0, Math.min(1, (meanHV + 20) / 50)); // -20→0, +30→1
-    const lvNorm = Math.max(0, Math.min(1, (meanLV + 10) / 30)); // -10→0, +20→1
-    regimeScore = (hvNorm * 0.5 + lvNorm * 0.5) * 25;
-  }
-
-  // 3. Estabilidade temporal (0-20 pts)
-  const sharpes3w = [18, 21, 24].map(w => {
-    const wk = useKeys.slice(-w);
-    const wr = wk.map(k => monthly[k]);
-    const wm = mean(wr); const ws = std(wr);
-    return ws > 0 && wr.reduce((a,b)=>a+b,0) > 0 ? wm/ws*Math.sqrt(12) : 0;
-  });
-  const sharpeCVraw = mean(sharpes3w) > 0 ? std(sharpes3w) / mean(sharpes3w) : 1;
-  const minSh = Math.min(...sharpes3w);
-  // CV ≤ 0.15 = 20pts; CV = 0.35 = 10pts; CV > 0.60 = 0pts
-  const stabCV  = Math.max(0, Math.min(20, (1 - sharpeCVraw / 0.60) * 20));
-  // Mínimo Sharpe nas 3 janelas > 1.0 adiciona bônus
-  const stabMin = minSh >= 1.0 ? stabCV : stabCV * 0.5;
-  const stabilityScore = stabMin;
-
-  // 4. Sharpe Time-Weighted (0-20 pts)
-  const wArr = Float64Array.from(
-    ret.length === 24
-      ? [...Array(12).fill(1), ...Array(6).fill(2), ...Array(6).fill(3)]
-      : Array(ret.length).fill(1)
-  );
-  const wSum   = wArr.reduce((a,b)=>a+b,0);
-  const wNorm  = Array.from(wArr).map(w=>w/wSum);
-  const wMean  = ret.reduce((s,v,i)=>s+v*wNorm[i],0);
-  const wStd   = Math.sqrt(ret.reduce((s,v,i)=>s+wNorm[i]*(v-wMean)**2,0));
-  const sharpeTW = wStd > 0 ? wMean/wStd*Math.sqrt(12) : 0;
-  // TW < 0.8=0pts; 1.2=8pts; 2.5=20pts
-  const twScore = Math.max(0, Math.min(20, (sharpeTW - 0.8) / 1.7 * 20));
-
-  // 5. Consistência mensal / CV (0-10 pts)
   const n = ret.length;
   const m = mean(ret);
   const s = std(ret);
-  if (s === 0) return null;
-  const monthlyCV = Math.abs(m) > 0 ? s / Math.abs(m) : 9999;
-  // CV ≤ 1.0=10pts; CV=2.0=5pts; CV≥4.0=0pts
-  const cvScore = Math.max(0, Math.min(10, (1 - Math.max(0, monthlyCV - 1.0) / 3.0) * 10));
+  const negRet = ret.filter(r => r < 0);
+  const downStd = negRet.length > 1 ? std(negRet) : s;
 
-  // ── SCORE DE ROBUSTEZ TOTAL (0-100) ──
-  const robustScore = Math.round(wfScore + regimeScore + stabilityScore + twScore + cvScore);
-
-  // ── MÉTRICAS PADRÃO ──────────────────────────────────────
-  const cumArr = []; let cc = 0;
-  for (const r of ret) { cc += r; cumArr.push(cc); }
-  const peakArr = []; let pk = 0;
-  for (const v of cumArr) { pk = Math.max(pk,v); peakArr.push(pk); }
-  const ddArr = cumArr.map((v,i)=>v-peakArr[i]);
-  const maxDD = min(ddArr);
-  if (totalRet > 0 && Math.abs(maxDD) > totalRet * 0.8) return null;
-
-  // ── MÉTRICAS PADRÃO ──────────────────────────────────────
-  const negRet     = ret.filter(r => r < 0);
-  const downStd    = negRet.length > 1 ? std(negRet) : s;
   const posMonths  = ret.filter(r => r > 0).length;
   const negMonths  = ret.filter(r => r < 0).length;
   const worstMonth = min(ret);
-  const latThresh  = Math.max(50, Math.abs(m) * 0.3);
-  const latMonths  = ret.filter(r => Math.abs(r) <= latThresh).length;
+
+  // Lateral months: |resultado| <= threshold (3% do retorno médio absoluto, mín 50)
+  const lateralThresh = Math.max(50, Math.abs(m) * 0.3);
+  const lateralMonths = ret.filter(r => Math.abs(r) <= lateralThresh).length;
 
   let maxConsec = 0, cur = 0;
-  for (const r of ret) { if (r>0){cur++;maxConsec=Math.max(maxConsec,cur);}else cur=0; }
+  for (const r of ret) { if (r > 0) { cur++; maxConsec = Math.max(maxConsec, cur); } else cur = 0; }
 
-  const ddMonths  = ddArr.filter(d => d < 0).length;
+  // Cumulative + drawdown
+  const cum = []; let c = 0;
+  for (const r of ret) { c += r; cum.push(c); }
+  const peakArr = []; let pk = 0;
+  for (const v of cum) { pk = Math.max(pk, v); peakArr.push(pk); }
+  const ddArr = cum.map((v, i) => v - peakArr[i]);
+  const maxDD = min(ddArr);
+
+  // DD recovery duration (months in drawdown = ddArr < 0)
+  const ddMonths = ddArr.filter(d => d < 0).length;
+
+  // Max consecutive months in drawdown
   let maxDDStreak = 0, ddStreak = 0;
-  for (const d of ddArr) { if(d<0){ddStreak++;maxDDStreak=Math.max(maxDDStreak,ddStreak);}else ddStreak=0; }
+  for (const d of ddArr) { if (d < 0) { ddStreak++; maxDDStreak = Math.max(maxDDStreak, ddStreak); } else ddStreak = 0; }
 
-  const negDays    = dailyVals.filter(v => v < 0).length;
-  const pctNegDays = dailyVals.length > 0 ? negDays / dailyVals.length : 0;
-  const worstDay   = dailyVals.length ? min(dailyVals) : 0;
+  // Daily stats (last 24 months window)
+  const cutoff = useKeys[0]; // "YYYY-MM" first month in window
+  const dailyVals = Object.entries(daily)
+    .filter(([d]) => d.substring(0,7) >= cutoff)
+    .map(([, v]) => v);
+  const negDays     = dailyVals.filter(v => v < 0).length;
+  const totalDays   = dailyVals.length;
+  const pctNegDays  = totalDays > 0 ? negDays / totalDays : 0;
+  const worstDay    = dailyVals.length ? min(dailyVals) : 0;
 
-  const sharpe   = s > 0 ? m / s * Math.sqrt(12) : 0;
-  const sortino  = downStd > 0 ? m / downStd * Math.sqrt(12) : 0;
-  const calmar   = maxDD < 0 ? (m * 12) / Math.abs(maxDD) : m * 12;
-  const payoff   = avgLoss > 0 ? avgWin / avgLoss : 0;
-  const winRate  = total > 0 ? wins / total : 0;
+  const sharpe  = s > 0 ? m / s * Math.sqrt(12) : 0;
+  const sortino = downStd > 0 ? m / downStd * Math.sqrt(12) : 0;
+  const calmar  = maxDD < 0 ? (m * 12) / Math.abs(maxDD) : m * 12;
+  const payoff  = avgLoss > 0 ? avgWin / avgLoss : 0;
+  const winRate = total > 0 ? wins / total : 0;
   const annualReturn = m * 12;
 
-  const sanityWarn = (pf > 15 || winRate > 0.92 || (total < 60 && winRate > 0.85));
+  // Sanity warning (borderline — não exclui mas sinaliza)
+  const sanityWarn = (
+    payoff > 8 ||
+    winRate > 0.92 ||
+    (total < 60 && winRate > 0.85)
+  );
 
   return {
     name, useKeys, ret, monthly,
-    n_months: n, annual_return: annualReturn,
-    pct_pos: posMonths/n, neg_months: negMonths,
-    lateral_months: latMonths, worst_month: worstMonth,
-    max_consec: maxConsec, std_monthly: s,
-    max_dd: maxDD, dd_months: ddMonths, max_dd_streak: maxDDStreak,
-    neg_days: negDays, total_days: dailyVals.length,
-    pct_neg_days: pctNegDays, worst_day: worstDay,
-    sharpe, sharpe_tw: sharpeTW, sortino, calmar,
-    payoff, profit_factor: pf, win_rate: winRate,
-    n_trades: total, monthly_cv: +monthlyCV.toFixed(2),
-    sharpe_cv: +sharpeCVraw.toFixed(2), sharpes_3w: sharpes3w,
-    sum_train: sumTrain, sum_test: sumTest, pos_test: posTest,
-    mean_hv: meanHV, mean_lv: meanLV,
-    robust_score: robustScore,
-    robust_wf: +wfScore.toFixed(1),
-    robust_regime: +regimeScore.toFixed(1),
-    robust_stab: +stabilityScore.toFixed(1),
-    robust_tw: +twScore.toFixed(1),
-    robust_cv: +cvScore.toFixed(1),
+    n_months: n,
+    annual_return: annualReturn,
+    pct_pos: posMonths / n,
+    neg_months: negMonths,
+    lateral_months: lateralMonths,
+    worst_month: worstMonth,
+    max_consec: maxConsec,
+    std_monthly: s,
+    max_dd: maxDD,
+    dd_months: ddMonths,
+    max_dd_streak: maxDDStreak,
+    neg_days: negDays,
+    total_days: totalDays,
+    pct_neg_days: pctNegDays,
+    worst_day: worstDay,
+    sharpe, sortino, calmar, payoff, win_rate: winRate,
+    n_trades: total,
     sanity_warn: sanityWarn,
   };
 }
 
 function scoreMetric(m) {
-  // Score v4 — filosofia Giant Steps completa
-  // Lateralização e estabilidade temporal são prioridade máxima
+  // Score v3 — lateralização como prioridade máxima (filosofia Giant Steps)
+  // Lateralização penaliza clientes tanto quanto meses negativos
   let s = 0;
-  // Usa Sharpe time-weighted se disponível, senão Sharpe simples
-  const sh = m.sharpe_tw || m.sharpe;
-  s += Math.min(sh, 5) / 5 * 25;                              // Sharpe TW:    25%
-  s += m.pct_pos * 16;                                         // Meses+:       16%
-  s += Math.max(0, 1 - m.neg_months / 8) * 10;               // Meses−:       10%
-  s += Math.max(0, 1 - m.lateral_months / 6) * 18;           // LATERAL:      18%
-  s += Math.max(0, 1 - Math.abs(m.max_dd) / 3000) * 10;     // Max DD:       10%
-  s += Math.max(0, 1 - m.max_dd_streak / 6) * 8;            // DD Streak:     8%
-  s += Math.max(0, 1 - (m.monthly_cv||1) / 3) * 7;          // Consistência:  7% NOVO
-  s += Math.max(0, 1 - m.pct_neg_days / 0.5) * 4;           // % Dias−:       4%
-  s += Math.max(0, 1 - m.std_monthly / 1000) * 2;           // Vol mensal:    2%
+  s += Math.min(m.sharpe, 5) / 5 * 25;                          // Sharpe:      25%
+  s += m.pct_pos * 18;                                            // Meses+:      18%
+  s += Math.max(0, 1 - m.neg_months / 8) * 12;                  // Meses−:      12%
+  s += Math.max(0, 1 - m.lateral_months / 6) * 20;              // LATERAL:     20% ← prioritário
+  s += Math.max(0, 1 - Math.abs(m.max_dd) / 3000) * 10;        // Max DD:      10%
+  s += Math.max(0, 1 - m.max_dd_streak / 6) * 8;               // DD Streak:    8%
+  s += Math.max(0, 1 - m.pct_neg_days / 0.5) * 5;              // % Dias−:      5%
+  s += Math.max(0, 1 - m.std_monthly / 1000) * 2;              // Vol mensal:   2%
   return +s.toFixed(2);
 }
 
@@ -1463,8 +1317,8 @@ async function analyzeAll() {
     }
 
     try {
-      const { monthly, daily, wins, total, avgWin, avgLoss, profitFactor } = parseOrders(data);
-      const m = computeMetrics(name, monthly, daily, wins, total, avgWin, avgLoss, profitFactor);
+      const { monthly, daily, wins, total, avgWin, avgLoss } = parseOrders(data);
+      const m = computeMetrics(name, monthly, daily, wins, total, avgWin, avgLoss);
       if (m) {
         m.score = scoreMetric(m);
         S.setups.push(m);
@@ -1487,10 +1341,7 @@ async function analyzeAll() {
   setStatus(`${S.setups.length} setups analisados`, 'ok');
   renderRanking();
   renderScatterCharts();
-  anlRefreshList();   // ← atualiza lista da aba Analisar
-  // Só navega para ranking se não veio da aba Analisar
-  if (!S._fromAnalisar) goTab('ranking');
-  S._fromAnalisar = false;
+  goTab('ranking');
 }
 
 // ── RANKING ──────────────────────────────────────────────
@@ -1560,7 +1411,7 @@ function attachRankSearch() {
     if (f === 'top25') data = data.slice(0, Math.ceil(data.length * 0.25));
     if (f === 'pass')  data = data.filter(m =>
       m.pct_pos >= 0.6 && m.sharpe >= 1.5 &&
-      m.profit_factor >= 1.3 && m.worst_month > -2000);
+      m.payoff >= 1.0  && m.worst_month > -2000);
     if (q) data = data.filter(m => m.name.toLowerCase().includes(q));
     renderRankingTable(data);
   };
@@ -1690,52 +1541,42 @@ async function runOptimizer() {
   const maxC      = parseFloat($('maxCorrThresh').value) || 0.6;
   const minTrades = parseInt($('minTrades').value) || 0;
   const maxDDCap  = parseFloat($('maxDDCap').value) || 500;
-  const minRobust = parseFloat($('minRobust').value) || 0;
 
   if (S.setups.length < n) { alert('Carregue mais setups primeiro.'); return; }
 
   $('optResult').style.display = 'none';
   $('optProgress').style.display = 'block';
 
-  // Filtro base + Score de Robustez (substitui critérios binários)
+  // Filtro base + mínimo de trades + sanidade + Max DD cap + exclusões manuais
   const filtered = S.setups.filter(m =>
-    m.pct_pos       >= 0.60  &&
-    m.sharpe        >= 1.5   &&
-    m.profit_factor >= 1.3   &&
-    m.worst_month   > -2000  &&
-    m.annual_return > 0      &&
-    m.n_trades      >= minTrades &&
-    Math.abs(m.max_dd) <= maxDDCap &&
-    (m.robust_score || 0) >= minRobust &&
+    m.pct_pos      >= 0.60  &&
+    m.sharpe       >= 1.5   &&
+    m.payoff       >= 1.0   &&
+    m.worst_month  > -2000  &&
+    m.annual_return > 0     &&
+    m.n_trades     >= minTrades &&
+    Math.abs(m.max_dd) <= maxDDCap &&   // ← Max DD cap
     !m.sanity_warn  &&
     !S.excluded.has(m.name)
   );
 
   const rejectedByTrades = S.setups.filter(m =>
     m.pct_pos >= 0.60 && m.sharpe >= 1.5 &&
-    m.profit_factor >= 1.3 && m.worst_month > -2000 &&
+    m.payoff >= 1.0 && m.worst_month > -2000 &&
     m.annual_return > 0 && m.n_trades < minTrades &&
     !m.sanity_warn && !S.excluded.has(m.name)
   );
 
   const rejectedBySanity = S.setups.filter(m =>
     m.sanity_warn &&
-    m.pct_pos >= 0.60 && m.sharpe >= 1.5 && m.profit_factor >= 1.3 &&
+    m.pct_pos >= 0.60 && m.sharpe >= 1.5 && m.payoff >= 1.0 &&
     m.annual_return > 0
   );
 
   const rejectedByDD = S.setups.filter(m =>
     Math.abs(m.max_dd) > maxDDCap &&
     m.pct_pos >= 0.60 && m.sharpe >= 1.5 &&
-    m.profit_factor >= 1.3 && m.annual_return > 0 &&
-    !m.sanity_warn && !S.excluded.has(m.name)
-  );
-
-  const rejectedByRobust = S.setups.filter(m =>
-    (m.robust_score || 0) < minRobust &&
-    m.pct_pos >= 0.60 && m.sharpe >= 1.5 &&
-    m.profit_factor >= 1.3 && m.annual_return > 0 &&
-    Math.abs(m.max_dd) <= maxDDCap &&
+    m.payoff >= 1.0 && m.annual_return > 0 &&
     !m.sanity_warn && !S.excluded.has(m.name)
   );
 
@@ -1762,14 +1603,11 @@ async function runOptimizer() {
   const ddMsg = rejectedByDD.length > 0
     ? ` · <span style="color:var(--y)">📉 ${rejectedByDD.length} excluídos por Max DD > ${maxDDCap}</span>`
     : '';
-  const robustMsg = rejectedByRobust.length > 0
-    ? ` · <span style="color:var(--y)">🛡 ${rejectedByRobust.length} excluídos por Robusto < ${minRobust}</span>`
-    : '';
   const exclMsg = S.excluded.size > 0
     ? ` · <span style="color:var(--r)">⊘ ${S.excluded.size} excluídos manualmente</span>`
     : '';
-  fi.innerHTML = `Filtros: Sharpe ≥ 1,5 · Fator Lucro ≥ 1,3 · Trades ≥ <strong>${minTrades}</strong> · Max DD ≤ <strong>${maxDDCap}</strong> · Robusto ≥ <strong>${minRobust}</strong>
-  &nbsp;→ <strong>${filtered.length} qualificados</strong> de ${S.setups.length} totais${rejMsg}${sanityMsg}${ddMsg}${robustMsg}${exclMsg}`;
+  fi.innerHTML = `Filtros: Sharpe ≥ 1,5 · Payoff ≥ 1,0 · Trades ≥ <strong>${minTrades}</strong> · Max DD ≤ <strong>${maxDDCap}</strong>
+  &nbsp;→ <strong>${filtered.length} qualificados</strong> de ${S.setups.length} totais${rejMsg}${sanityMsg}${ddMsg}${exclMsg}`;
 
   // Pre-compute correlation matrix
   const N = candidates.length;
@@ -1826,15 +1664,14 @@ async function runOptimizer() {
         const group = combo.map(i=>candidates[i]);
         const w = 1 / group.length;
 
-        // 2. Calcular retorno mensal do portfolio usando TODOS os meses do grupo
-        const groupKeys = getCommonKeys(group);
-        const portRet = groupKeys.map(k =>
+        // 2. Calcular retorno mensal do portfolio
+        const portRet = allPortKeys.map(k =>
           group.reduce((s,m) => s + (m.monthly[k]||0) * w, 0)
         );
 
         // 3. RESTRIÇÃO OBRIGATÓRIA: 100% meses positivos
         const posMonths = portRet.filter(r => r > 0).length;
-        if (posMonths < groupKeys.length) continue; // descarta se tiver qualquer mês negativo ou zero
+        if (posMonths < allPortKeys.length) continue; // descarta se tiver qualquer mês negativo
         combos100pct++;
 
         // 4. Entre os que passam: minimizar lateralização do portfolio
@@ -1863,46 +1700,9 @@ async function runOptimizer() {
 
   $('optProgress').style.display = 'none';
 
-  // Fallback: se nenhuma combinação teve 100% meses positivos, aceitar máx 1 mês negativo
-  if (!best) {
-    ptxt.textContent = 'Sem 100% — buscando mínimo de meses negativos...';
-    $('optProgress').style.display = 'block';
-    await new Promise(resolve => {
-      let iter2 = combinations(idxArr, n);
-      function step2() {
-        const batchSize = 3000;
-        for (let b=0;b<batchSize;b++) {
-          const nxt = iter2.next();
-          if (nxt.done) { resolve(); return; }
-          const combo = nxt.value;
-          let maxC2 = -Infinity; const corrs2 = []; let skip2 = false;
-          for (let i=0;i<combo.length&&!skip2;i++)
-            for (let j=i+1;j<combo.length&&!skip2;j++) {
-              const c = corrMat[combo[i]][combo[j]];
-              if (c > maxC) { skip2=true; break; }
-              corrs2.push(c); maxC2=Math.max(maxC2,c);
-            }
-          if (skip2) continue;
-          const group = combo.map(i=>candidates[i]);
-          const w = 1/group.length;
-          const gKeys2 = getCommonKeys(group);
-          const portRet = gKeys2.map(k => group.reduce((s,m)=>s+(m.monthly[k]||0)*w,0));
-          const negM = portRet.filter(r=>r<0).length;
-          if (negM > 1) continue;
-          const portMean = portRet.reduce((a,b)=>a+b,0)/portRet.length;
-          const latT = Math.max(50,Math.abs(portMean)*0.3);
-          const latM = portRet.filter(r=>Math.abs(r)<=latT).length;
-          const combined = mean(combo.map(i=>candidates[i].score)) - negM*20 - latM*3 - mean(corrs2)*8;
-          if (combined > bestScore) { bestScore=combined; best=group.slice(); }
-        }
-        setTimeout(step2, 0);
-      }
-      step2();
-    });
-    $('optProgress').style.display = 'none';
-  }
+  // Condição obrigatória: 100% meses positivos — sem fallback.
 
-  if (!best) { alert('Nenhuma combinação válida encontrada. Ajuste os filtros.'); return; }
+  if (!best) { alert(`Nenhuma combinação com 100% meses positivos encontrada.\n\nDica: aumente o pool de candidatos, reduza o nº de setups na carteira ou afrouxe os filtros de Sharpe/Payoff.`); return; }
 
   S.portfolio = best;
   renderOptimizerResult(best, corrMat, candidates, keys);
@@ -1930,30 +1730,7 @@ function renderOptimizerResult(group, corrMat, candidates, keys) {
         <div class="rc-row"><span class="rc-k">Dias−</span><span class="rc-v" style="color:${m.neg_days<=10?'var(--g)':m.neg_days<=20?'var(--y)':'var(--r)'}">${m.neg_days} (${pct(m.pct_neg_days)})</span></div>
         <div class="rc-row"><span class="rc-k">Pior dia</span><span class="rc-v" style="color:var(--y)">${fmt(m.worst_day,0)}</span></div>
         <div class="rc-row"><span class="rc-k">Win Rate</span><span class="rc-v">${pct(m.win_rate)}</span></div>
-        <div class="rc-row" style="flex-direction:column;align-items:flex-start;gap:4px">
-          <div style="display:flex;align-items:center;gap:8px;width:100%">
-            <span class="rc-k">Robusto</span>
-            <span class="rc-v ${(m.robust_score||0)>=60?'val-g':(m.robust_score||0)>=40?'val-y':'val-r'}" style="font-size:15px;font-weight:700">${m.robust_score||0}/100</span>
-            <span class="rc-k" style="margin-left:8px">Fator L.</span><span class="rc-v">${fmtN(m.profit_factor||0,2)}</span>
-            <span class="rc-k" style="margin-left:8px">Payoff</span><span class="rc-v">${fmtN(m.payoff,2)}</span>
-          </div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:2px">
-            ${[
-              ['WF', m.robust_wf||0, 25],
-              ['Regime', m.robust_regime||0, 25],
-              ['Estab', m.robust_stab||0, 20],
-              ['TW', m.robust_tw||0, 20],
-              ['CV', m.robust_cv||0, 10]
-            ].map(([lbl,val,max]) => {
-              const pct = val/max;
-              const cls = pct>=0.75?'val-g':pct>=0.45?'val-y':'val-r';
-              return `<span style="font-size:10px;padding:2px 5px;border-radius:3px;background:var(--bg2);border:1px solid var(--border)">
-                <span style="color:var(--muted2)">${lbl}</span>
-                <span class="${cls}" style="margin-left:3px;font-weight:600">${Math.round(val)}/${max}</span>
-              </span>`;
-            }).join('')}
-          </div>
-        </div>
+        <div class="rc-row"><span class="rc-k">Payoff</span><span class="rc-v">${fmtN(m.payoff,2)}</span></div>
         <div class="rc-row"><span class="rc-k">Trades</span><span class="rc-v" style="color:${m.n_trades>=100?'var(--g)':m.n_trades>=50?'var(--y)':'var(--r)'}">${m.n_trades}${m.n_trades<100?' ⚠':''}</span></div>
         <div class="rc-row"><span class="rc-k">Score</span><span class="rc-v" style="color:var(--b)">${fmtN(m.score,1)}</span></div>
       </div>
@@ -2981,475 +2758,6 @@ function renderSmartTBot(group) {
       }
     }
   });
-
-// ── ZIP LOADER DA ABA ANALISAR ──────────────────────────────
-$('anlZipInput').addEventListener('change', async function(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  const status = $('anlLoadStatus');
-  status.textContent = '⏳ Carregando ' + file.name + '...';
-  status.style.color = 'var(--muted2)';
-  $('anlEmpty').style.display = 'none';
-  $('anlSetupList').style.display = 'none';
-  try {
-    const buf = await file.arrayBuffer();
-    const zip = await JSZip.loadAsync(buf);
-    // Extrair todos os JSONs do ZIP
-    const entries = [];
-    zip.forEach(function(path, entry) {
-      if (!entry.dir && path.endsWith('.json') && path.indexOf('__MACOSX') === -1) {
-        entries.push({path, entry});
-      }
-    });
-    status.textContent = '⏳ Processando ' + entries.length + ' arquivos...';
-    // Processar cada JSON
-    let loaded = 0;
-    for (const {path, entry} of entries) {
-      try {
-        const txt = await entry.async('string');
-        const data = JSON.parse(txt);
-        if (!data.orders) continue;
-        const name = path.replace(/.*\//, '').replace('_BT.json', '').replace('.json', '');
-        // Evitar duplicatas
-        if (S.setups.find(function(s) { return s.name === name; })) continue;
-        const parsed = parseOrders(data);
-        const m = computeMetrics(name, parsed.monthly, parsed.daily, parsed.wins, parsed.total, parsed.avgWin, parsed.avgLoss, parsed.profitFactor);
-        if (m) { m.score = scoreMetric(m); S.setups.push(m); loaded++; }
-      } catch(err) {}
-    }
-    S.setups.sort(function(a,b) { return b.score - a.score; });
-    status.textContent = '✓ ' + loaded + ' setups carregados';
-    status.style.color = 'var(--g)';
-    anlRefreshList();
-  } catch(err) {
-    status.textContent = '⚠ Erro: ' + err.message;
-    status.style.color = 'var(--r)';
-    $('anlEmpty').style.display = '';
-  }
-  e.target.value = '';
-});
-
-// ══════════════════════════════════════════════════════
-// PAGE 8 — ANALISAR CARTEIRA (seleção por clique)
-// ══════════════════════════════════════════════════════
-
-const ANL = { selected: [] };  // nomes dos setups selecionados
-
-// Popula a lista quando backtests são carregados
-function anlRefreshList() {
-  const list = $('anlSetupList');
-  const empty = $('anlEmpty');
-  if (!S.setups.length) {
-    if (list) list.style.display = 'none';
-    if (empty) empty.style.display = '';
-    return;
-  }
-  if (empty) empty.style.display = 'none';
-  if (list) list.style.display = 'grid';
-  anlRenderList();
-}
-
-function anlRenderList() {
-  const list = $('anlSetupList');
-  if (!list) return;
-  const q = ($('anlSearch') || {value:''}).value.toLowerCase().replace(/\s+/g,'');
-  const sortBy = ($('anlSort') || {value:'score'}).value;
-  let items = [...S.setups];
-  if (q) items = items.filter(m => m.name.toLowerCase().replace(/_/g,'').includes(q));
-  items.sort((a,b) => {
-    if (sortBy==='score')  return (b.score||0)-(a.score||0);
-    if (sortBy==='sharpe') return (b.sharpe||0)-(a.sharpe||0);
-    if (sortBy==='robust') return (b.robust_score||0)-(a.robust_score||0);
-    return a.name.localeCompare(b.name);
-  });
-
-  list.innerHTML = items.map(m => {
-    const sel = ANL.selected.includes(m.name);
-    const rb  = m.robust_score || 0;
-    const rbCls = rb>=60?'val-g':rb>=40?'val-y':'val-r';
-    return `<div class="anl-item${sel?' anl-sel':''}" data-name="${m.name}"
-      style="padding:10px 12px;border:2px solid ${sel?'var(--g)':'var(--border)'};
-      border-radius:6px;background:${sel?'rgba(0,146,95,0.08)':'var(--s1)'};
-      cursor:pointer;transition:all .15s;user-select:none">
-      <div style="display:flex;justify-content:space-between;align-items:start;gap:4px">
-        <div style="font-size:11px;font-weight:700;color:var(--text);word-break:break-all;line-height:1.3">${m.name.replace(/_/g,' ')}</div>
-        ${sel?'<span style="color:var(--g);font-size:14px;flex-shrink:0">✓</span>':''}
-      </div>
-      <div style="display:flex;gap:6px;margin-top:5px;flex-wrap:wrap">
-        <span style="font-size:10px;color:var(--muted2)">Score <strong style="color:var(--text)">${m.score||0}</strong></span>
-        <span style="font-size:10px;color:var(--muted2)">Sh <strong style="color:var(--text)">${(m.sharpe||0).toFixed(2)}</strong></span>
-        <span class="${rbCls}" style="font-size:10px">R${rb}</span>
-        <span style="font-size:10px;color:var(--muted2)">${fmtPct((m.pct_pos||0)*100)}</span>
-      </div>
-    </div>`;
-  }).join('');
-
-  // Click handlers
-  list.querySelectorAll('.anl-item').forEach(el => {
-    el.addEventListener('click', () => {
-      const name = el.dataset.name;
-      if (ANL.selected.includes(name)) {
-        ANL.selected = ANL.selected.filter(n=>n!==name);
-      } else {
-        if (ANL.selected.length >= 4) { $('anlRunMsg').textContent='Máximo 4 setups.'; return; }
-        ANL.selected.push(name);
-        $('anlRunMsg').textContent = '';
-      }
-      anlUpdateSelBar();
-      anlRenderList();
-    });
-  });
-}
-
-function anlUpdateSelBar() {
-  $('anlSelCount').textContent = ANL.selected.length;
-  $('anlSelNames').innerHTML = ANL.selected.map((n,i) =>
-    `<span style="background:var(--gb);border:1px solid var(--g);border-radius:3px;
-    padding:2px 8px;font-size:11px;font-family:var(--mono);color:var(--g);cursor:pointer"
-    data-idx="${i}" title="Clique para remover">
-      ${n.replace(/_/g,' ').substring(0,22)} ✕
-    </span>`
-  ).join('');
-  $('anlSelNames').querySelectorAll('span').forEach(el => {
-    el.addEventListener('click', () => {
-      ANL.selected.splice(+el.dataset.idx, 1);
-      anlUpdateSelBar(); anlRenderList();
-    });
-  });
-}
-
-// Search + sort
-if ($('anlSearch')) $('anlSearch').addEventListener('input', anlRenderList);
-if ($('anlSort'))   $('anlSort').addEventListener('change', anlRenderList);
-if ($('anlClearBtn')) $('anlClearBtn').addEventListener('click', () => {
-  ANL.selected = []; anlUpdateSelBar(); anlRenderList();
-  $('anlContent').style.display='none';
-});
-
-// Usar seleção do otimizador
-$('anlFromOptBtn').addEventListener('click', () => {
-  if (!S.portfolio.length) { alert('Rode o otimizador primeiro.'); return; }
-  ANL.selected = S.portfolio.slice(0,4).map(m=>m.name);
-  anlUpdateSelBar(); anlRenderList();
-});
-
-// Analisar
-$('anlRunBtn').addEventListener('click', () => {
-  const msg = $('anlRunMsg');
-  if (ANL.selected.length < 2) { msg.textContent='Selecione pelo menos 2 setups.'; return; }
-  const found = ANL.selected.map(n => S.setups.find(m=>m.name===n)).filter(Boolean);
-  if (found.length < 2) { msg.textContent='Setups não encontrados.'; return; }
-  msg.textContent = '';
-  $('anlContent').style.display = 'block';
-  renderAnlCards(found);
-  renderAnlCorr(found);
-  renderAnlPortfolio(found);
-  renderAnlConsistencia(found);
-  renderAnlSugestao(found);
-  $('anlContent').scrollIntoView({behavior:'smooth', block:'start'});
-});
-
-// anlRefreshList é chamado automaticamente no final de analyzeAll()
-
-[1,2,3,4].forEach(i => {
-  $(`anlSetup${i}`).addEventListener('input', () => {
-    const q = $(`anlSetup${i}`).value.trim().toLowerCase();
-    const hint = $(`anlMatch${i}`);
-    if (!q || !S.setups.length) { hint.textContent = ''; return; }
-    const match = S.setups.find(m => m.name.toLowerCase().includes(q.replace(/\s+/g,'_').replace(/-/g,'_')) ||
-      m.name.toLowerCase().replace(/_/g,' ').includes(q));
-    hint.textContent = match ? `✓ ${match.name}` : '— não encontrado';
-    hint.style.color = match ? 'var(--g)' : 'var(--r)';
-  });
-});
-
-// Use optimizer selection
-$('anlFromOptBtn').addEventListener('click', () => {
-  if (!S.portfolio.length) { alert('Rode o otimizador primeiro.'); return; }
-  S.portfolio.forEach((m,i) => { if(i<4) $(`anlSetup${i+1}`).value = m.name.replace(/_/g,' '); });
-  runAnalisar();
-});
-
-$('anlFromPortBtn').addEventListener('click', () => {
-  if (!S.portfolio.length) { alert('Selecione uma carteira no Portfolio primeiro.'); return; }
-  S.portfolio.forEach((m,i) => { if(i<4) $(`anlSetup${i+1}`).value = m.name.replace(/_/g,' '); });
-  runAnalisar();
-});
-
-$('anlRunBtn').addEventListener('click', runAnalisar);
-
-function findSetupByName(q) {
-  if (!q) return null;
-  const norm = s => s.toLowerCase().replace(/[\s\-]+/g,'_').replace(/__+/g,'_');
-  const qn = norm(q);
-  // Exact match first
-  let m = S.setups.find(s => norm(s.name) === qn);
-  if (m) return m;
-  // Partial — all words must appear
-  const words = qn.split('_').filter(Boolean);
-  m = S.setups.find(s => words.every(w => norm(s.name).includes(w)));
-  if (m) return m;
-  // Looser — just check if query appears anywhere
-  return S.setups.find(s => norm(s.name).includes(qn)) || null;
-}
-
-function runAnalisar() {
-  if (!S.setups.length) { alert('Carregue os backtests primeiro.'); return; }
-
-  const queries = [1,2,3,4].map(i => $(`anlSetup${i}`).value.trim()).filter(Boolean);
-  if (queries.length < 2) { alert('Digite pelo menos 2 setups.'); return; }
-
-  const found = queries.map(q => findSetupByName(q));
-  const missing = queries.filter((_,i) => !found[i]);
-  if (missing.length) { alert(`Não encontrado: ${missing.join(', ')}`); return; }
-
-  // Update hints
-  found.forEach((m,i) => {
-    $(`anlMatch${i+1}`).textContent = m ? `✓ ${m.name}` : '';
-    $(`anlMatch${i+1}`).style.color = 'var(--g)';
-  });
-
-  $('anlEmpty').style.display = 'none';
-  $('anlContent').style.display = 'block';
-
-  renderAnlCards(found);
-  renderAnlCorr(found);
-  renderAnlPortfolio(found);
-  renderAnlConsistencia(found);
-  renderAnlSugestao(found);
-}
-
-function renderAnlCards(group) {
-  const c = $('anlCards');
-  c.style.gridTemplateColumns = `repeat(${group.length},1fr)`;
-  const roleNames = ['Núcleo A','Núcleo B','Crescimento','Estabilizador'];
-  c.innerHTML = group.map((m,i) => {
-    const rb = m.robust_score||0;
-    const rbCls = rb>=60?'val-g':rb>=40?'val-y':'val-r';
-    const dims = [
-      ['WF', m.robust_wf||0, 25],
-      ['Reg', m.robust_regime||0, 25],
-      ['Est', m.robust_stab||0, 20],
-      ['TW', m.robust_tw||0, 20],
-      ['CV', m.robust_cv||0, 10],
-    ];
-    return `<div class="rc-card" style="border-top:3px solid ${rb>=60?'var(--g)':rb>=40?'var(--y)':'var(--r)'}">
-      <div class="rc-role">${roleNames[i]||'Setup '+(i+1)} · 25%</div>
-      <div class="rc-name">${m.name}</div>
-      <div class="rc-row"><span class="rc-k">Score</span><span class="rc-v val-g">${m.score||0}</span></div>
-      <div class="rc-row"><span class="rc-k">Sharpe</span><span class="rc-v">${fmtN(m.sharpe,2)}</span></div>
-      <div class="rc-row"><span class="rc-k">Meses+</span><span class="rc-v ${m.pct_pos>=0.9?'val-g':m.pct_pos>=0.75?'val-y':'val-r'}">${fmtPct(m.pct_pos*100)}</span></div>
-      <div class="rc-row"><span class="rc-k">Meses−</span><span class="rc-v ${m.neg_months===0?'val-g':m.neg_months<=2?'val-y':'val-r'}">${m.neg_months}</span></div>
-      <div class="rc-row"><span class="rc-k">Lateral</span><span class="rc-v ${m.lateral_months===0?'val-g':m.lateral_months<=2?'val-y':'val-r'}">${m.lateral_months}m</span></div>
-      <div class="rc-row"><span class="rc-k">Consec+</span><span class="rc-v">${m.max_consec}m</span></div>
-      <div class="rc-row"><span class="rc-k">Max DD</span><span class="rc-v val-r">${fmtN(m.max_dd,0)}</span></div>
-      <div class="rc-row"><span class="rc-k">DD Streak</span><span class="rc-v">${m.max_dd_streak}m</span></div>
-      <div class="rc-row"><span class="rc-k">Pior mês</span><span class="rc-v ${m.worst_month>=0?'val-g':'val-r'}">${fmtN(m.worst_month,0)}</span></div>
-      <div class="rc-row"><span class="rc-k">Dias−</span><span class="rc-v ${m.pct_neg_days<0.30?'val-g':m.pct_neg_days<0.40?'val-y':'val-r'}">${m.neg_days} (${fmtPct(m.pct_neg_days*100)})</span></div>
-      <div class="rc-row"><span class="rc-k">Pior dia</span><span class="rc-v val-r">${fmtN(m.worst_day,0)}</span></div>
-      <div class="rc-row"><span class="rc-k">Win Rate</span><span class="rc-v">${fmtPct(m.win_rate*100)}</span></div>
-      <div class="rc-row" style="flex-wrap:wrap;gap:4px">
-        <span class="rc-k">Robusto</span>
-        <span class="rc-v ${rbCls}" style="font-weight:700">${rb}/100</span>
-        <span class="rc-k" style="margin-left:6px">Fator L.</span><span class="rc-v">${fmtN(m.profit_factor||0,2)}</span>
-        <span class="rc-k" style="margin-left:6px">Payoff</span><span class="rc-v">${fmtN(m.payoff,2)}</span>
-      </div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">
-        ${dims.map(([lbl,val,mx]) => {
-          const p=val/mx; const cl=p>=0.75?'val-g':p>=0.45?'val-y':'val-r';
-          return `<span style="font-size:10px;padding:2px 4px;border-radius:3px;background:var(--bg2);border:1px solid var(--border)">
-            <span style="color:var(--muted2)">${lbl}</span>
-            <span class="${cl}" style="margin-left:2px;font-weight:600">${Math.round(val)}/${mx}</span>
-          </span>`;
-        }).join('')}
-      </div>
-      <div class="rc-row"><span class="rc-k">Trades</span><span class="rc-v">${m.n_trades}</span></div>
-    </div>`;
-  }).join('');
-}
-
-function renderAnlCorr(group) {
-  const ak = getCommonKeys(group);
-  group.forEach(m => m._series = getSeriesForKeys(m, ak));
-  const N = group.length;
-  let pairs = [], sum = 0, max = -Infinity;
-  const mat = Array.from({length:N},()=>Array(N).fill(0));
-  for(let i=0;i<N;i++) for(let j=0;j<N;j++) {
-    const c = i===j ? 1 : pearson(group[i]._series, group[j]._series);
-    mat[i][j] = c;
-    if(i<j){ pairs.push(c); sum+=c; max=Math.max(max,c); }
-  }
-  const avg = pairs.length ? sum/pairs.length : 0;
-  $('anlCorrSummary').textContent = `Corr média: ${fmtN(avg,3)} · Máxima: ${fmtN(max,3)}`;
-  const shortName = m => m.name.replace(/_\d{7,}$/,'').substring(0,20);
-  $('anlCorrMatrix').innerHTML = `<table class="corr-table">
-    <thead><tr><th></th>${group.map(m=>`<th>${shortName(m)}</th>`).join('')}</tr></thead>
-    <tbody>${group.map((a,i)=>`<tr><th>${shortName(a)}</th>${group.map((_,j)=>{
-      const v=mat[i][j]; const abs=Math.abs(v);
-      const bg=i===j?'var(--bg2)':v<0?`rgba(0,146,95,${abs*0.6})`:`rgba(220,38,38,${abs*0.6})`;
-      return `<td style="background:${bg};text-align:center;padding:5px 8px;font-family:var(--mono);font-size:11px">${fmtN(v,3)}</td>`;
-    }).join('')}</tr>`).join('')}</tbody>
-  </table>`;
-}
-
-function renderAnlPortfolio(group) {
-  const ak = getCommonKeys(group);
-  const pr = ak.map(k => group.reduce((s,m)=>s+(m.monthly[k]||0)/group.length,0));
-  const pm = mean(pr); const ps = std(pr);
-  const cum = []; let cc=0,pk=0;
-  const ddArr = pr.map(r=>{ cc+=r; cum.push(cc); pk=Math.max(pk,cc); return cc-pk; });
-  const maxDD = Math.min(...ddArr);
-  const lt = Math.max(50, Math.abs(pm)*0.3);
-  const lat = pr.filter(r=>Math.abs(r)<=lt).length;
-  const pos = pr.filter(r=>r>0).length;
-  const sharpe = ps>0?pm/ps*Math.sqrt(12):0;
-
-  const kpi = (label,val,cls='') => `<div class="stb-row"><span class="stb-lbl">${label}</span><span class="stb-val ${cls}">${val}</span></div>`;
-  $('anlPortKpis').innerHTML = `
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
-      <div class="stb-card">${kpi('Meses+',`${pos}/${pr.length} (${fmtPct(pos/pr.length*100)})`,pos===pr.length?'val-g':pos>=pr.length*0.75?'val-y':'val-r')}
-        ${kpi('Laterais',lat,lat===0?'val-g':lat<=2?'val-y':'val-r')}
-        ${kpi('Pior mês',fmtN(Math.min(...pr),0),Math.min(...pr)>=0?'val-g':'val-r')}</div>
-      <div class="stb-card">${kpi('Sharpe portfolio',fmtN(sharpe,2),sharpe>=3?'val-g':sharpe>=1.5?'val-y':'val-r')}
-        ${kpi('Ret/ano est.',`R$ ${fmtN(pm*12,0)}`)}
-        ${kpi('Max DD',fmtN(maxDD,0),'val-r')}</div>
-      <div class="stb-card">${kpi('Setups',group.length)}
-        ${kpi('Período',`${ak[0]} → ${ak[ak.length-1]}`)}
-        ${kpi('Meses analisados',ak.length)}</div>
-      <div class="stb-card">${kpi('Pior dia',fmtN(Math.min(...group.map(m=>m.worst_day)),0),'val-r')}
-        ${kpi('Consec+ máx',Math.max(...group.map(m=>m.max_consec))+'m')}
-        ${kpi('DD streak máx',Math.max(...group.map(m=>m.max_dd_streak))+'m')}</div>
-    </div>`;
-
-  // Monthly table
-  $('anlMonthly').innerHTML = `<div style="overflow-x:auto"><table class="monthly-table">
-    <thead><tr><th>Mês</th>${group.map(m=>`<th>${m.name.split('_')[0]}</th>`).join('')}<th><strong>Portfolio</strong></th></tr></thead>
-    <tbody>${ak.map((k,i)=>{
-      const pv=pr[i]; const cls=pv>lt?'pos':pv<-lt?'neg':'lat';
-      return `<tr><td class="month-label">${k}</td>
-        ${group.map(m=>{const v=m.monthly[k]||0;return`<td class="${v>0?'pos':v<0?'neg':'lat'}">${fmtN(v,0)}</td>`;}).join('')}
-        <td class="${cls}"><strong>${fmtN(pv,0)}</strong></td></tr>`;
-    }).join('')}</tbody>
-  </table></div>`;
-}
-
-function renderAnlConsistencia(group) {
-  const ak = getCommonKeys(group);
-  const pr = ak.map(k => group.reduce((s,m)=>s+(m.monthly[k]||0)/group.length,0));
-  const allDays = {};
-  group.forEach(m => Object.entries(m.monthly||{}).forEach(([mo,v]) => {
-    allDays[mo] = (allDays[mo]||0) + v/group.length;
-  }));
-  const dvals = Object.values(allDays);
-  const gains = dvals.filter(v=>v>0).reduce((a,b)=>a+b,0);
-  const pains = dvals.filter(v=>v<0).reduce((a,b)=>a+Math.abs(b),0);
-  const gpr = pains>0?gains/pains:99;
-  let cum2=0,pk2=0,sq=0;
-  pr.forEach(v=>{ cum2+=v; pk2=Math.max(pk2,cum2); const dd=(cum2-pk2)/Math.max(1,pk2)*100; sq+=dd*dd; });
-  const ulcer = Math.sqrt(sq/pr.length);
-  const weekly={};
-  group.forEach(m => Object.entries(m.monthly||{}).forEach(([mo,v]) => { weekly[mo]=(weekly[mo]||0)+v/group.length; }));
-  const wvals = Object.values(weekly);
-  const pctWeekPos = wvals.filter(v=>v>0).length/wvals.length;
-  const mn=mean(pr),sd=std(pr);
-  const skew=sd>0?pr.reduce((s,v)=>s+((v-mn)/sd)**3,0)*pr.length/((pr.length-1)*(pr.length-2)):0;
-  const scoreGPR   = Math.min(100,gpr/2*100);
-  const scoreUlcer = Math.max(0,(1-ulcer/10)*100);
-  const scoreSkew  = Math.min(100,Math.max(0,(skew+1)/2*100));
-  const scoreWeek  = Math.min(100,pctWeekPos/0.90*100);
-  const gsTotal    = Math.round((scoreGPR+scoreUlcer+scoreSkew+scoreWeek)/4);
-
-  function makePill(label,val,target,score,ok) {
-    const pct = Math.min(100,score);
-    const col = ok ? 'var(--g)' : 'var(--r)';
-    return '<div style="background:var(--s1);border:1px solid var(--border);border-radius:4px;padding:10px 14px">'
-      + '<div style="font-size:10px;color:var(--muted2);margin-bottom:4px">'+label+' · TARGET '+target+'</div>'
-      + '<div style="font-size:18px;font-weight:700;color:'+col+'">'+val+'</div>'
-      + '<div style="height:4px;background:var(--bg2);border-radius:2px;margin-top:6px">'
-      + '<div style="width:'+pct+'%;height:100%;background:'+col+';border-radius:2px"></div>'
-      + '</div></div>';
-  }
-
-  const scoreColor = gsTotal>=70?'var(--g)':gsTotal>=50?'var(--y)':'var(--r)';
-  $('anlConsistencia').innerHTML =
-    '<div class="sec-hd" style="margin-bottom:8px"><h3 style="font-size:13px;margin:0">Score de Consistência — Filosofia Giant Steps</h3></div>'
-    + '<div style="display:flex;align-items:center;gap:16px;margin-bottom:12px;flex-wrap:wrap">'
-    + '<div style="font-size:48px;font-weight:800;color:'+scoreColor+'">'+gsTotal+'</div>'
-    + '<div style="font-size:11px;color:var(--muted2)">Score Consistência<br>0-100 · meta ≥70</div>'
-    + '</div>'
-    + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">'
-    + makePill('Gain-to-Pain',fmtN(gpr,2),'>1,5',scoreGPR,gpr>=1.5)
-    + makePill('Ulcer Index',fmtN(ulcer,2),'<2',scoreUlcer,ulcer<=2)
-    + makePill('Skewness',fmtN(skew,2),'≥0',scoreSkew,skew>=0)
-    + makePill('% Meses+',fmtPct(pctWeekPos*100),'>75%',scoreWeek,pctWeekPos>=0.75)
-    + '</div>';
-}
-}
-
-function renderAnlSugestao(group) {
-  // Find weakest setup by robust_score
-  const sorted = [...group].sort((a,b)=>(a.robust_score||0)-(b.robust_score||0));
-  const weakest = sorted[0];
-
-  // Find best replacement: not in current group, passes basic filters, improves portfolio
-  const ak = getCommonKeys(group);
-  group.forEach(m => m._series = getSeriesForKeys(m, ak));
-
-  const candidates = S.setups.filter(m =>
-    !group.find(g=>g.name===m.name) &&
-    m.pct_pos >= 0.60 && m.sharpe >= 1.5 && (m.profit_factor||0) >= 1.3 &&
-    m.annual_return > 0 && !m.sanity_warn
-  ).sort((a,b)=>(b.robust_score||0)-(a.robust_score||0));
-
-  if (!candidates.length) {
-    $('anlSugestao').innerHTML = '<p style="color:var(--muted2)">Nenhum substituto encontrado nos backtests carregados.</p>';
-    return;
-  }
-
-  // Try top 10 candidates and pick best portfolio result
-  const others = group.filter(m=>m.name!==weakest.name);
-  let bestSub=null, bestPortScore=-Infinity;
-
-  candidates.slice(0,20).forEach(cand => {
-    cand._series = getSeriesForKeys(cand, ak);
-    const newGroup = [...others, cand];
-    const pr = ak.map(k => newGroup.reduce((s,m)=>s+(m.monthly[k]||0)/newGroup.length,0));
-    if (pr.some(r=>r<0)) return;
-    const pm=mean(pr),ps=std(pr);
-    const sh=ps>0?pm/ps*Math.sqrt(12):0;
-    const lt=Math.max(50,Math.abs(pm)*0.3);
-    const lat=pr.filter(r=>Math.abs(r)<=lt).length;
-    const portScore=sh-lat*0.5+(cand.robust_score||0)/100;
-    if(portScore>bestPortScore){bestPortScore=portScore;bestSub=cand;}
-  });
-
-  if (!bestSub) { $('anlSugestao').innerHTML='<p>Nenhuma substituição melhora o portfolio.</p>'; return; }
-
-  const rb = bestSub.robust_score||0;
-  const wRb = weakest.robust_score||0;
-  $('anlSugestao').innerHTML = `
-    <div style="display:grid;grid-template-columns:1fr 48px 1fr;gap:12px;align-items:start;margin-bottom:16px">
-      <div style="background:rgba(220,38,38,0.07);border:1px solid rgba(220,38,38,0.3);border-radius:4px;padding:14px">
-        <div style="font-size:10px;color:var(--r);margin-bottom:6px;font-family:var(--mono)">⚠ SETUP MAIS FRACO</div>
-        <div style="font-size:13px;font-weight:700;margin-bottom:8px">${weakest.name}</div>
-        <div style="font-size:11px;color:var(--muted2)">Score Robusto: <strong class="val-r">${wRb}/100</strong></div>
-        <div style="font-size:11px;color:var(--muted2)">Score: ${weakest.score||0} · Sharpe TW: ${fmtN(weakest.sharpe_tw||weakest.sharpe,2)}</div>
-        <div style="font-size:11px;color:var(--muted2)">WF:${Math.round(weakest.robust_wf||0)}/25 · Reg:${Math.round(weakest.robust_regime||0)}/25 · Est:${Math.round(weakest.robust_stab||0)}/20 · TW:${Math.round(weakest.robust_tw||0)}/20 · CV:${Math.round(weakest.robust_cv||0)}/10</div>
-      </div>
-      <div style="display:flex;align-items:center;justify-content:center;font-size:24px;padding-top:20px">→</div>
-      <div style="background:rgba(0,146,95,0.07);border:1px solid rgba(0,146,95,0.3);border-radius:4px;padding:14px">
-        <div style="font-size:10px;color:var(--g);margin-bottom:6px;font-family:var(--mono)">✓ SUBSTITUTO SUGERIDO</div>
-        <div style="font-size:13px;font-weight:700;margin-bottom:8px">${bestSub.name}</div>
-        <div style="font-size:11px;color:var(--muted2)">Score Robusto: <strong class="val-g">${rb}/100</strong></div>
-        <div style="font-size:11px;color:var(--muted2)">Score: ${bestSub.score||0} · Sharpe TW: ${fmtN(bestSub.sharpe_tw||bestSub.sharpe,2)}</div>
-        <div style="font-size:11px;color:var(--muted2)">WF:${Math.round(bestSub.robust_wf||0)}/25 · Reg:${Math.round(bestSub.robust_regime||0)}/25 · Est:${Math.round(bestSub.robust_stab||0)}/20 · TW:${Math.round(bestSub.robust_tw||0)}/20 · CV:${Math.round(bestSub.robust_cv||0)}/10</div>
-        <div style="font-size:11px;color:var(--muted2);margin-top:4px">Meses+: ${fmtPct(bestSub.pct_pos*100)} · FL: ${fmtN(bestSub.profit_factor||0,2)} · Trades: ${bestSub.n_trades}</div>
-      </div>
-    </div>
-    <div style="font-size:11px;color:var(--muted2);font-style:italic">
-      Motivo: ${weakest.name.split('_')[0]} tem o menor Score de Robustez da carteira (${wRb}/100).
-      ${bestSub.name.split('_')[0]} melhora o portfolio mantendo 100% meses positivos com maior estabilidade temporal.
-    </div>`;
 }
 </script>
 </body>
