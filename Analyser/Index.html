@@ -1,0 +1,2327 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Setup Analyzer — CloudPlay</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script><script>
+// ══════════════════════ SIMULADOR ══════════════════════
+let simChart = null;
+let currentGainPts = null;
+let currentLossPts = null;
+
+// ── Tab router (includes simulador init) ──
+function showTab(id, btn) {
+  document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  if (btn) btn.classList.add('active');
+  if (id === 'curve') renderCurveChart();
+  if (id === 'temporal') renderMonthChart();
+  if (id === 'outliers') renderHistChart();
+  if (id === 'simulador') initSimulator();
+}
+
+// ── Initialize simulator: run sweep + populate buttons ──
+function initSimulator() {
+  if (!A || !A.trades) return;
+  buildParamButtons();
+  runSweep();
+}
+
+// Build gain/loss quick-pick buttons from real data
+function buildParamButtons() {
+  const d = A;
+  const realGainPts = d.avgPtsCapturado > 0 ? Math.round(d.avgPtsCapturado) : 0;
+  const realLossPts = d.losses.length > 0 ? Math.round(Math.abs(d.avgLoss) / (d.trades[0]?.qty || 1) / 0.2) : 0;
+
+  // Gain buttons: 25%, 50%, 75%, 100% of real avg pts captured, rounded to 5
+  const gainSteps = realGainPts > 0
+    ? [25, 50, 75, 100].map(p => Math.max(5, Math.round(realGainPts * p / 100 / 5) * 5))
+    : [50, 100, 150, 200];
+  const uniqueGains = [...new Set(gainSteps)];
+
+  document.getElementById('gainBtns').innerHTML = uniqueGains.map(g =>
+    `<button class="sim-btn" onclick="setGainPts(${g},this)">${g} pts</button>`
+  ).join('') + `<button class="sim-btn active-base" onclick="setGainPts(null,this)">Real (${realGainPts > 0 ? realGainPts + ' pts' : 'auto'})</button>`;
+
+  // Loss buttons: 50%, 75%, 100% of real avg loss pts (only smaller losses are simulable)
+  const lossSteps = realLossPts > 0
+    ? [50, 75, 100].map(p => Math.max(5, Math.round(realLossPts * p / 100 / 5) * 5))
+    : [50, 100, 150];
+  const uniqueLosses = [...new Set(lossSteps)];
+
+  document.getElementById('lossBtns').innerHTML = uniqueLosses.map(l =>
+    `<button class="sim-btn" onclick="setLossPts(${l},this)">${l} pts</button>`
+  ).join('') + `<button class="sim-btn active-base" onclick="setLossPts(null,this)">Real (${realLossPts > 0 ? realLossPts + ' pts' : 'auto'})</button>`;
+}
+
+function setGainPts(val, btn) {
+  currentGainPts = val;
+  document.querySelectorAll('#gainBtns .sim-btn').forEach(b => { b.classList.remove('active'); b.classList.add('active-base'); });
+  if (btn) { btn.classList.remove('active-base'); btn.classList.add('active'); }
+  renderSimulator(currentGainPts, currentLossPts);
+}
+function setLossPts(val, btn) {
+  currentLossPts = val;
+  document.querySelectorAll('#lossBtns .sim-btn').forEach(b => { b.classList.remove('active'); b.classList.add('active-base'); });
+  if (btn) { btn.classList.remove('active-base'); btn.classList.add('active'); }
+  renderSimulator(currentGainPts, currentLossPts);
+}
+function runManualSim() {
+  const g = parseFloat(document.getElementById('simGainInput').value) || null;
+  const l = parseFloat(document.getElementById('simLossInput').value) || null;
+  currentGainPts = g; currentLossPts = l;
+  renderSimulator(g, l);
+}
+
+// ── AUTO SWEEP: test all gain×loss combinations ──
+function runSweep() {
+  const d = A;
+  if (!d || !d.trades) return;
+
+  const sweepEl = document.getElementById('sweepResult');
+  const loadEl = document.getElementById('sweepLoading');
+  loadEl.style.display = 'block';
+  sweepEl.innerHTML = '';
+  document.getElementById('matrixCard').style.display = 'none';
+
+  setTimeout(() => {
+    try {
+      const result = computeSweep(d);
+      loadEl.style.display = 'none';
+      renderSweepResult(result, d);
+    } catch(e) {
+      loadEl.style.display = 'none';
+      sweepEl.innerHTML = alertBox('r', '❌', 'Erro na varredura: ' + e.message);
+    }
+  }, 50);
+}
+
+function computeSweep(d) {
+  // Collect real pts captured per winning trade
+  const winPts = d.trades.filter(t => t.ptsCapturado > 0).map(t => t.ptsCapturado);
+  if (winPts.length === 0) return { error: 'Nenhum trade vencedor com dados de preço disponível.' };
+
+  const maxWinPts = Math.max(...winPts);
+  const minWinPts = Math.min(...winPts);
+  const avgWinPts = winPts.reduce((a, b) => a + b, 0) / winPts.length;
+
+  // Gain range: test from 10% to 100% of max observed pts, in steps
+  const gainStep = Math.max(5, Math.round(maxWinPts / 20 / 5) * 5);
+  const gainValues = [];
+  for (let g = Math.max(5, Math.round(minWinPts / 2 / 5) * 5); g <= maxWinPts; g += gainStep) {
+    gainValues.push(Math.round(g / 5) * 5);
+  }
+  if (!gainValues.includes(Math.round(avgWinPts / 5) * 5)) {
+    gainValues.push(Math.round(avgWinPts / 5) * 5);
+    gainValues.sort((a, b) => a - b);
+  }
+
+  // Loss range: test smaller losses only (larger not simulable)
+  // We look at winning trades: how many pts did the market move before hitting gain?
+  // A smaller loss = stop tighter = some winning trades that barely survived might not
+  // BUT: for winning trades, we KNOW the market didn't hit the real loss level
+  // So testing a smaller loss on a winning trade: the trade result would be the same
+  // (unless market touched the tighter stop first - which we CAN'T know without candles)
+  // 
+  // What we CAN simulate honestly:
+  // - Smaller gain on winning trades: market already proved it got there ✓
+  // - Smaller loss: we can only say "if stop were X, would the trade still win?"
+  //   For winning trades we don't know if market dipped to a tighter stop - NOT simulable
+  //
+  // HONEST APPROACH for loss: test different loss/gain ratios
+  // Since we can't simulate loss changes without candles, we show the
+  // theoretical impact of different loss sizes on the PF math
+  // PF_theoretical = (wr * avgGain_sim) / ((1-wr) * avgLoss_sim)
+  // This is purely mathematical, clearly labeled as theoretical
+
+  // For the matrix: vary gain (real data) vs loss ratio (theoretical)
+  const lossRatios = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]; // ratio of loss to gain
+  
+  const matrix = [];
+  let bestRF = -Infinity, bestGain = null, bestLoss = null, bestResult = null;
+  const realRF = d.rf;
+
+  for (const gPts of gainValues) {
+    const row = { gainPts: gPts, cells: [] };
+    for (const lRatio of lossRatios) {
+      const lPts = Math.round(gPts * lRatio / 5) * 5;
+      // Simulate with this gain (real data) and loss ratio (theoretical)
+      const sim = simulateGainOnly(d, gPts);
+      // Theoretical adjustment for different loss
+      const simGains = sim.trades.filter(t => t.simResultado > 0).map(t => t.simResultado);
+      const simLosses = sim.trades.filter(t => t.simResultado < 0);
+      
+      // For loss simulation: theoretical - adjust loss magnitude proportionally
+      // Real avg loss in R$ per trade
+      const realAvgLossR = d.avgLoss; // already in R$ (net)
+      const valPerPt = d.trades[0]?.qty ? d.trades[0].qty * 0.2 : 0.2;
+      const simAvgLossR = lPts * valPerPt * (d.trades[0]?.qty || 1);
+      
+      // Recalculate with adjusted losses
+      const adjResults = sim.trades.map(t => {
+        if (t.simResultado >= 0) return t.simResultado;
+        // Scale loss proportionally
+        const scale = realAvgLossR > 0 ? simAvgLossR / realAvgLossR : 1;
+        return t.simResultado * scale;
+      });
+
+      const adjGains = adjResults.filter(r => r > 0);
+      const adjLosses = adjResults.filter(r => r < 0);
+      const adjTotal = adjResults.reduce((a, b) => a + b, 0);
+      const adjGrossP = adjGains.reduce((a, b) => a + b, 0);
+      const adjGrossL = Math.abs(adjLosses.reduce((a, b) => a + b, 0));
+      const adjPF = adjGrossL > 0 ? adjGrossP / adjGrossL : Infinity;
+
+      let pk = 0, dd = 0, cap = 0;
+      adjResults.forEach(r => { cap += r; if (cap > pk) pk = cap; if (pk - cap > dd) dd = pk - cap; });
+      const adjRF = dd > 0 ? adjTotal / dd : Infinity;
+      const isTheoretical = lRatio !== 1.0;
+
+      row.cells.push({ gainPts: gPts, lossPts: lPts, lRatio, total: adjTotal, pf: adjPF, rf: adjRF, dd, isTheoretical });
+
+      if (adjRF > bestRF) {
+        bestRF = adjRF; bestGain = gPts; bestLoss = lPts;
+        bestResult = { total: adjTotal, pf: adjPF, rf: adjRF, dd, lRatio };
+      }
+    }
+    matrix.push(row);
+  }
+
+  return { matrix, bestGain, bestLoss, bestResult, bestRF, realRF, gainValues, lossRatios, avgWinPts, maxWinPts };
+}
+
+function simulateGainOnly(d, targetGainPts) {
+  const simTrades = d.trades.map(t => {
+    if (t.resultado <= 0) return { ...t, simResultado: t.netResultado, blocked: false };
+    if (t.ptsCapturado <= 0) return { ...t, simResultado: t.netResultado, blocked: false };
+    if (targetGainPts > t.ptsCapturado) return { ...t, simResultado: t.netResultado, blocked: true };
+    const valPorPto = t.resultado / t.ptsCapturado;
+    const grossSim = Math.round(targetGainPts * valPorPto * 100) / 100;
+    const simResultado = grossSim - t.tradeCost;
+    return { ...t, simResultado, blocked: false, changed: true };
+  });
+  return { trades: simTrades };
+}
+
+function renderSweepResult(result, d) {
+  const el = document.getElementById('sweepResult');
+  if (result.error) { el.innerHTML = alertBox('y', '⚠️', result.error); return; }
+
+  const { bestGain, bestLoss, bestResult, bestRF, realRF, avgWinPts, maxWinPts, matrix, lossRatios } = result;
+  const improved = bestRF > realRF;
+
+  // Summary cards
+  el.innerHTML = `
+    <div class="grid g4 mb2">
+      ${kpiCard('Gain Ótimo Encontrado', bestGain + ' pts', `vs real médio: ${Math.round(avgWinPts)} pts`, 'a', 'at')}
+      ${kpiCard('Ratio Loss/Gain Ótimo', fmt(bestResult.lRatio, 2) + 'x', `Loss teórico: ~${bestLoss} pts`, bestResult.lRatio <= 1.5 ? 'g' : 'y', '')}
+      ${kpiCard('RF com Combinação Ótima', bestRF === Infinity ? '∞' : fmt(bestRF, 2), `Real atual: ${fmt(realRF, 2)}`, improved ? 'g' : 'r', improved ? 'gt' : 'rt')}
+      ${kpiCard('Resultado Líquido Ótimo', fmtR(bestResult.total), `Real atual: ${fmtR(d.totalProfit)}`, bestResult.total >= d.totalProfit ? 'g' : 'r', '')}
+    </div>
+    ${alertBox(improved ? 'g' : 'y', improved ? '🏆' : '💡',
+      improved
+        ? `<strong>Combinação ótima encontrada: Gain ${bestGain} pts + ratio loss/gain ${fmt(bestResult.lRatio, 2)}x</strong> — Recovery Factor melhora de ${fmt(realRF, 2)} para ${bestRF === Infinity ? '∞' : fmt(bestRF, 2)}. `
+          + `Resultado líquido: <strong>${fmtR(bestResult.total)}</strong>. `
+          + (bestResult.lRatio !== 1.0 ? '<em>Nota: ajuste de loss é teórico — baseado em proporção matemática, não em dados de candle.</em>' : '')
+        : `O gain e ratio de loss atuais já estão próximos do ótimo para os dados disponíveis.`
+    )}
+    ${bestResult.lRatio !== 1.0 ? alertBox('y', '⚠️', '<strong>Loss teórico:</strong> A simulação de loss diferente do real é matemática (proporcional), não baseada em candles reais. Use como orientação de direção, não como dado exato.') : ''}
+  `;
+
+  // Render matrix
+  renderMatrix(matrix, lossRatios, d, bestGain, bestResult.lRatio);
+}
+
+function renderMatrix(matrix, lossRatios, d, bestGain, bestLRatio) {
+  document.getElementById('matrixCard').style.display = 'block';
+  const realRF = d.rf;
+
+  let html = '<tr><th>Gain ↓ Loss ratio →</th>' + lossRatios.map(r => `<th>${fmt(r, 2)}x<br><span style="font-size:9px;color:var(--muted)">${r===1.0?'REAL':'teórico'}</span></th>`).join('') + '</tr>';
+
+  matrix.forEach(row => {
+    const isOptGain = row.gainPts === bestGain;
+    html += `<tr>`;
+    html += `<td style="font-weight:${isOptGain?700:400};color:${isOptGain?'var(--accent)':'var(--text)'}">${row.gainPts} pts${isOptGain?' ★':''}</td>`;
+    row.cells.forEach(cell => {
+      const isOpt = cell.gainPts === bestGain && Math.abs(cell.lRatio - bestLRatio) < 0.01;
+      const rfVal = cell.rf === Infinity ? '∞' : fmt(cell.rf, 1);
+      const better = cell.rf > realRF;
+      const color = isOpt ? 'var(--accent)' : better ? 'var(--green)' : cell.rf >= realRF * 0.8 ? 'var(--yellow)' : 'var(--red)';
+      const bg = isOpt ? 'rgba(0,119,204,.15)' : better ? 'rgba(10,124,79,.07)' : 'rgba(192,40,58,.05)';
+      html += `<td style="text-align:center;background:${bg};color:${color};font-weight:${isOpt?700:400}">
+        ${isOpt ? '★ ' : ''}${rfVal}
+        <div style="font-size:9px;color:var(--muted)">${fmtR(cell.total)}</div>
+      </td>`;
+    });
+    html += '</tr>';
+  });
+
+  document.getElementById('matrixTable').innerHTML = html;
+}
+
+// ── Manual simulation (gain only, honest) ──
+function renderSimulator(gainPts, lossPts) {
+  const d = A;
+  if (!d || !d.trades) return;
+
+  const sim = simulateGainOnly(d, gainPts || Infinity);
+  const simTrades = sim.trades;
+  const simResults = simTrades.map(t => t.simResultado);
+  const simGains = simResults.filter(r => r > 0);
+  const simLosses = simResults.filter(r => r < 0);
+  const simTotal = simResults.reduce((a, b) => a + b, 0);
+  const simGrossP = simGains.reduce((a, b) => a + b, 0);
+  const simGrossL = Math.abs(simLosses.reduce((a, b) => a + b, 0));
+  const simPF = simGrossL > 0 ? simGrossP / simGrossL : Infinity;
+  const simWR = simGains.length / simResults.length;
+  let pk = 0, dd = 0, cap = 0;
+  simResults.forEach(r => { cap += r; if (cap > pk) pk = cap; if (pk - cap > dd) dd = pk - cap; });
+  const simRF = dd > 0 ? simTotal / dd : Infinity;
+  const blocked = simTrades.filter(t => t.blocked).length;
+  const label = gainPts ? gainPts + ' pts' : 'Real';
+
+  // KPIs
+  document.getElementById('simKpis').innerHTML = [
+    kpiCard('Resultado Líquido Sim.', fmtR(simTotal), `Real: ${fmtR(d.totalProfit)}`, simTotal >= d.totalProfit ? 'g' : 'r', simTotal >= d.totalProfit ? 'gt' : 'rt'),
+    kpiCard('Profit Factor Sim.', simPF === Infinity ? '∞' : fmt(simPF, 3), `Real: ${fmt(d.pf, 3)}`, simPF >= d.pf ? 'g' : 'r', ''),
+    kpiCard('Recovery Factor Sim.', simRF === Infinity ? '∞' : fmt(simRF, 2), `Real: ${fmt(d.rf, 2)}`, simRF >= d.rf ? 'g' : 'r', ''),
+    kpiCard('Bloqueados', String(blocked), 'Gain > real — não simulável', blocked > 0 ? 'y' : 'g', ''),
+  ].join('');
+
+  // Scenario table
+  const gainCandidates = [25, 50, 75, 100, 150, 200, 300, 500].filter(g => {
+    const maxPts = Math.max(...d.trades.filter(t => t.ptsCapturado > 0).map(t => t.ptsCapturado));
+    return g <= maxPts;
+  });
+  document.getElementById('simScenarioTable').innerHTML =
+    hrow(['Gain (pts)', 'Líquido', 'PF', 'RF', 'DD', 'Bloqueados']) +
+    gainCandidates.map(g => {
+      const s = simulateGainOnly(d, g);
+      const rs = s.trades.map(t => t.simResultado);
+      const gsP = rs.filter(r => r > 0).reduce((a, b) => a + b, 0);
+      const gsL = Math.abs(rs.filter(r => r < 0).reduce((a, b) => a + b, 0));
+      const sT = rs.reduce((a, b) => a + b, 0);
+      const sPF = gsL > 0 ? gsP / gsL : Infinity;
+      let sp = 0, sd = 0, sc = 0;
+      rs.forEach(r => { sc += r; if (sc > sp) sp = sc; if (sp - sc > sd) sd = sp - sc; });
+      const sRF = sd > 0 ? sT / sd : Infinity;
+      const sBlk = s.trades.filter(t => t.blocked).length;
+      const isActive = gainPts === g;
+      return `<tr style="${isActive ? 'background:rgba(0,119,204,.08);font-weight:600' : ''}">
+        <td>${g} pts${isActive ? ' ←' : ''}</td>
+        <td class="${sT >= d.totalProfit ? 'pos' : 'neg'}">${fmtR(sT)}</td>
+        <td class="${sPF >= 2 ? 'pos' : sPF >= 1.3 ? 'neu' : 'neg'}">${sPF === Infinity ? '∞' : fmt(sPF, 2)}</td>
+        <td class="${sRF >= 5 ? 'pos' : sRF >= 2 ? 'neu' : 'neg'}">${sRF === Infinity ? '∞' : fmt(sRF, 2)}</td>
+        <td class="${sd < d.maxDD ? 'pos' : 'neg'}">${fmtR(sd)}</td>
+        <td class="${sBlk > 0 ? 'neg' : 'pos'}">${sBlk > 0 ? sBlk + ' ⚠️' : '0'}</td>
+      </tr>`;
+    }).join('');
+
+  // Trade table (only changed ones)
+  const changed = simTrades.filter(t => t.blocked || Math.abs(t.simResultado - t.netResultado) > 0.01);
+  document.getElementById('simTradeTable').innerHTML =
+    hrow(['Data', 'Hora', 'Pts reais', 'Pts sim.', 'R$ real', 'R$ simulado', 'Dif.', 'Status']) +
+    changed.slice(0, 50).map(t => {
+      const diff = t.simResultado - t.netResultado;
+      const status = t.resultado < 0 ? badge('Loss — inalterado', 'r') :
+                     t.blocked ? badge('Bloqueado ⚠️', 'y') : badge('Saída antecipada', 'a');
+      return trow([t.date, fmtTime(t.hour, t.minute),
+        { v: t.ptsCapturado > 0 ? fmt(t.ptsCapturado) + 'pts' : '—' },
+        { v: gainPts && !t.blocked ? gainPts + 'pts' : '—' },
+        { v: fmtR(t.netResultado), cls: t.netResultado >= 0 ? 'pos' : 'neg' },
+        { v: fmtR(t.simResultado), cls: t.simResultado >= 0 ? 'pos' : 'neg' },
+        { v: diff !== 0 ? (diff > 0 ? '+' : '') + fmtR(diff) : '—', cls: diff > 0 ? 'pos' : diff < 0 ? 'neg' : '' },
+        status]);
+    }).join('') + (changed.length > 50 ? `<tr><td colspan="8" style="color:var(--muted);text-align:center">+${changed.length - 50} trades não exibidos</td></tr>` : '');
+
+  // Insight
+  const insights = [];
+  if (blocked > 0) insights.push({ cls: 'y', ic: '⚠️', txt: `<strong>${blocked} trade(s) bloqueado(s)</strong> — gain simulado maior que o movimento real. CSV não registra o que aconteceu após a saída.` });
+  if (simTotal > d.totalProfit) insights.push({ cls: 'g', ic: '💡', txt: `Com gain de <strong>${label}</strong>, resultado líquido <strong>melhora</strong>: ${fmtR(simTotal)} (+${fmtR(simTotal - d.totalProfit)}).` });
+  else if (simTotal < d.totalProfit) insights.push({ cls: 'r', ic: '📉', txt: `Com gain de <strong>${label}</strong>, resultado líquido <strong>piora</strong>: ${fmtR(simTotal)} (${fmtR(simTotal - d.totalProfit)}).` });
+  if (simRF > d.rf) insights.push({ cls: 'g', ic: '🛡️', txt: `Recovery Factor melhora de ${fmt(d.rf, 2)} para ${simRF === Infinity ? '∞' : fmt(simRF, 2)}.` });
+  document.getElementById('simInsightBox').innerHTML = '<h3>Interpretação</h3>' + insights.map(i => alertBox(i.cls, i.ic, i.txt)).join('');
+
+  // Chart
+  const labels = d.trades.map((_, i) => String(i + 1));
+  const realCurve = d.trades.reduce((acc, t) => { acc.push((acc[acc.length - 1] || 0) + t.netResultado); return acc; }, []);
+  const simCurve = simTrades.reduce((acc, t) => { acc.push((acc[acc.length - 1] || 0) + t.simResultado); return acc; }, []);
+  if (simChart) { simChart.destroy(); simChart = null; }
+  const ctx = document.getElementById('simCurveChart').getContext('2d');
+  simChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Real (líquido)', data: realCurve, borderColor: C.muted, borderWidth: 1.5, borderDash: [4, 3], pointRadius: 0, fill: false, tension: 0.1 },
+        { label: `Simulado (${label})`, data: simCurve, borderColor: C.accent, borderWidth: 2, pointRadius: 0, fill: true, backgroundColor: 'rgba(0,119,204,0.05)', tension: 0.1 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: true, labels: { color: '#5a6480', font: { size: 11 } } } },
+      scales: { x: { ticks: { maxTicksLimit: 12 } }, y: { ticks: { callback: v => 'R$' + v } } }
+    }
+  });
+}
+
+</script>
+<style>
+:root {
+  --bg:#f4f6fa;--surface:#ffffff;--surface2:#f0f2f7;--surface3:#e8ecf4;
+  --border:#dde2ee;--accent:#0077cc;--accent2:#5b3fcf;
+  --green:#0a7c4f;--red:#c0283a;--yellow:#a06000;--orange:#b05000;
+  --text:#1a2035;--muted:#5a6480;--muted2:#8892b0;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;line-height:1.6;min-height:100vh}
+
+/* ── UPLOAD SCREEN ── */
+#uploadScreen{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  min-height:100vh;padding:40px 20px;
+}
+.logo{font-size:13px;font-weight:700;letter-spacing:2px;color:var(--accent);text-transform:uppercase;margin-bottom:48px;opacity:.8}
+.upload-hero{font-size:38px;font-weight:900;letter-spacing:-1px;color:var(--text);text-align:center;line-height:1.1;margin-bottom:12px}
+.upload-sub{color:var(--muted);text-align:center;font-size:15px;margin-bottom:48px}
+.drop-zone{
+  width:100%;max-width:560px;border:2px dashed var(--border);border-radius:16px;
+  padding:56px 40px;text-align:center;cursor:pointer;transition:all .25s;
+  background:var(--surface);position:relative;
+}
+.drop-zone:hover,.drop-zone.drag{border-color:var(--accent);background:rgba(0,119,204,.04)}
+.drop-icon{font-size:48px;margin-bottom:16px;display:block}
+.drop-title{font-size:18px;font-weight:700;color:var(--text);margin-bottom:8px}
+.drop-hint{font-size:13px;color:var(--muted2)}
+.drop-zone input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;pointer-events:none}
+.format-tag{display:inline-block;margin-top:24px;font-size:11px;font-weight:700;letter-spacing:1px;background:var(--surface2);color:var(--accent);padding:4px 14px;border-radius:20px}
+.example-badge{margin-top:16px;font-size:12px;color:var(--muted2)}
+
+/* ── LOADING ── */
+#loadingScreen{display:none;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:24px}
+.spinner{width:48px;height:48px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-text{color:var(--muted);font-size:15px}
+.loading-steps{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.loading-step{font-size:13px;color:var(--muted2);display:flex;align-items:center;gap:8px}
+.loading-step.done{color:var(--green)}
+.loading-step .dot{width:8px;height:8px;border-radius:50%;background:var(--muted2);flex-shrink:0}
+.loading-step.done .dot{background:var(--green)}
+
+/* ── DASHBOARD ── */
+#dashboard{display:none}
+header{
+  background:linear-gradient(135deg,#e8edf8 0%,#f0f4fc 100%);
+  border-bottom:1px solid var(--border);padding:20px 36px;
+  display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
+}
+.header-left{display:flex;align-items:baseline;gap:14px}
+.header-left h1{font-size:22px;font-weight:800;color:var(--text);letter-spacing:-.5px}
+.header-left .period{font-size:12px;color:var(--muted);background:var(--surface2);padding:3px 10px;border-radius:10px}
+.header-right{display:flex;align-items:center;gap:12px}
+.btn-reset{background:none;border:1px solid var(--border);color:var(--muted);font-size:12px;padding:6px 14px;border-radius:8px;cursor:pointer;transition:all .2s}
+.btn-reset:hover{border-color:var(--accent);color:var(--accent)}
+.note-badge{font-size:22px;font-weight:900;background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+
+nav{background:var(--surface);border-bottom:1px solid var(--border);padding:0 36px;display:flex;gap:0;overflow-x:auto;scrollbar-width:none}
+nav::-webkit-scrollbar{display:none}
+nav button{background:none;border:none;color:var(--muted);padding:12px 16px;font-size:12px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;transition:all .2s;letter-spacing:.3px}
+nav button.active,nav button:hover{color:var(--accent);border-bottom-color:var(--accent)}
+
+main{padding:28px 36px;max-width:1440px;margin:0 auto}
+section{display:none}
+section.active{display:block}
+
+/* ── CARDS ── */
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+.g5{grid-template-columns:repeat(5,1fr)}
+.g12{grid-template-columns:1fr 1fr}
+.g13{grid-template-columns:1fr 3fr}
+.g23{grid-template-columns:2fr 3fr}
+.span2{grid-column:1/-1}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px}
+.card.at{border-top:2px solid var(--accent)}
+.card.gt{border-top:2px solid var(--green)}
+.card.rt{border-top:2px solid var(--red)}
+.card.yt{border-top:2px solid var(--yellow)}
+
+.kpi .lbl{font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px}
+.kpi .val{font-size:26px;font-weight:900;line-height:1;color:var(--text)}
+.kpi .sub{font-size:11px;color:var(--muted2);margin-top:4px}
+.val.g{color:var(--green)}.val.r{color:var(--red)}.val.y{color:var(--yellow)}.val.a{color:var(--accent)}.val.p{color:var(--accent2)}
+
+h2{font-size:15px;font-weight:700;color:var(--text);margin-bottom:16px;display:flex;align-items:center;gap:10px}
+h2 .tag{font-size:9px;font-weight:700;letter-spacing:1.2px;background:var(--surface2);color:var(--accent);padding:2px 8px;border-radius:4px;text-transform:uppercase}
+h3{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:8px 10px;color:var(--muted2);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border)}
+td{padding:8px 10px;border-bottom:1px solid rgba(180,190,210,.5)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(0,0,0,.02)}
+td.pos{color:var(--green);font-weight:600}
+td.neg{color:var(--red);font-weight:600}
+td.neu{color:var(--yellow);font-weight:600}
+
+.badge{display:inline-flex;align-items:center;font-size:10px;font-weight:700;padding:2px 9px;border-radius:20px;letter-spacing:.3px}
+.badge.g{background:rgba(10,124,79,.1);color:var(--green)}
+.badge.r{background:rgba(192,40,58,.1);color:var(--red)}
+.badge.y{background:rgba(160,96,0,.12);color:var(--yellow)}
+.badge.a{background:rgba(0,119,204,.1);color:var(--accent)}
+.badge.p{background:rgba(91,63,207,.1);color:var(--accent2)}
+
+.alert{border-radius:8px;padding:11px 14px;font-size:13px;display:flex;gap:10px;align-items:flex-start;margin-top:12px;line-height:1.6}
+.alert.g{background:rgba(10,124,79,.07);border-left:3px solid var(--green)}
+.alert.y{background:rgba(160,96,0,.07);border-left:3px solid var(--yellow)}
+.alert.r{background:rgba(192,40,58,.07);border-left:3px solid var(--red)}
+.alert.a{background:rgba(0,119,204,.07);border-left:3px solid var(--accent)}
+.alert .ic{font-size:15px;flex-shrink:0;margin-top:1px}
+
+.bar-row{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.bar-lbl{width:50px;font-size:12px;color:var(--muted)}
+.bar-track{flex:1;background:var(--surface2);border-radius:3px;height:7px;overflow:hidden}
+.bar-fill{height:100%;border-radius:3px;transition:width .6s ease}
+.bar-val{width:70px;font-size:11px;text-align:right;color:var(--muted)}
+
+.chart-wrap{position:relative}
+canvas{max-width:100%}
+
+.score-big{font-size:72px;font-weight:900;line-height:1;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+
+.rec-list{list-style:none}
+.rec-list li{padding:9px 0;border-bottom:1px solid var(--border);display:flex;gap:10px;font-size:13px;line-height:1.6}
+.rec-list li:last-child{border-bottom:none}
+.rec-list .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:7px}
+.rec-list .dot.g{background:var(--green)}
+.rec-list .dot.r{background:var(--red)}
+.rec-list .dot.y{background:var(--yellow)}
+.rec-list .dot.a{background:var(--accent)}
+
+.sim-btn{background:var(--surface2);border:1px solid var(--border);color:var(--muted);
+  padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;transition:all .2s}
+.sim-btn:hover{border-color:var(--accent);color:var(--accent)}
+.sim-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.sim-btn.active-base{background:var(--surface3);color:var(--text);border-color:var(--border);font-style:italic}
+.mb{margin-bottom:16px}
+.mb2{margin-bottom:24px}
+.mt{margin-top:12px}
+.mt2{margin-top:16px}
+
+@media(max-width:900px){
+  main{padding:16px}
+  .g4,.g5{grid-template-columns:repeat(2,1fr)}
+  .g3{grid-template-columns:repeat(2,1fr)}
+  .g12,.g23,.g13{grid-template-columns:1fr}
+  header{padding:16px}nav{padding:0 16px}
+}
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════ UPLOAD ══════════════════════════════ -->
+<div id="uploadScreen">
+  <div class="logo">☁ CloudPlay · Setup Analyzer</div>
+  <div class="upload-hero">Análise Completa<br>de Setup</div>
+  <div class="upload-sub">Faça upload do CSV exportado do ProfitChart / SmartTBot<br>e receba a análise completa automaticamente</div>
+  <div class="drop-zone" id="dropZone">
+    <input type="file" accept=".csv" id="fileInput">
+    <span class="drop-icon">📂</span>
+    <div class="drop-title">Arraste o CSV aqui</div>
+    <div class="drop-hint">ou clique para selecionar o arquivo</div>
+    <div class="format-tag">Formato: ProfitChart / SmartTBot</div>
+    <div class="example-badge">Separador ponto-e-vírgula · Decimal vírgula · Colunas: entrada/saída</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════ LOADING ══════════════════════════════ -->
+<div id="loadingScreen">
+  <div class="spinner"></div>
+  <div class="loading-text">Processando histórico de ordens...</div>
+  <div class="loading-steps" id="loadingSteps">
+    <div class="loading-step" id="ls1"><div class="dot"></div> Lendo e parseando CSV</div>
+    <div class="loading-step" id="ls2"><div class="dot"></div> Calculando métricas e curva de capital</div>
+    <div class="loading-step" id="ls3"><div class="dot"></div> Análise por horário e dia da semana</div>
+    <div class="loading-step" id="ls4"><div class="dot"></div> Simulação de encerramento progressivo</div>
+    <div class="loading-step" id="ls5"><div class="dot"></div> Monte Carlo (1.000 simulações)</div>
+    <div class="loading-step" id="ls6"><div class="dot"></div> Análise de outliers e autocorrelação</div>
+    <div class="loading-step" id="ls7"><div class="dot"></div> Montando dashboard...</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════ DASHBOARD ══════════════════════════════ -->
+<div id="dashboard">
+  <header>
+    <div class="header-left">
+      <h1 id="hTitle">Setup</h1>
+      <span class="period" id="hPeriod"></span>
+    </div>
+    <div class="header-right">
+      <span id="hNote" class="note-badge"></span>
+      <button class="btn-reset" onclick="resetApp()">↩ Novo CSV</button>
+    </div>
+  </header>
+
+  <nav>
+    <button class="active" onclick="showTab('overview',this)">📊 Visão Geral</button>
+    <button onclick="showTab('curve',this)">📈 Curva</button>
+    <button onclick="showTab('horarios',this)">⏰ Horários</button>
+    <button onclick="showTab('semana',this)">📅 Dia da Semana</button>
+    <button onclick="showTab('sequencias',this)">🔗 Sequências</button>
+    <button onclick="showTab('qualidade',this)">🎯 Métricas</button>
+    <button onclick="showTab('temporal',this)">📆 Consistência</button>
+    <button onclick="showTab('montecarlo',this)">🎲 Monte Carlo</button>
+    <button onclick="showTab('outliers',this)">⚡ Outliers</button>
+    <button onclick="showTab('custos',this)">💸 Custos</button>
+    <button onclick="showTab('relatorio',this)">📋 Relatório Final</button>
+    <button onclick="showTab('simulador',this)">🧪 Simulador</button>
+  </nav>
+
+  <main>
+
+    <!-- VISÃO GERAL -->
+    <section id="tab-overview" class="active">
+      <h2>📊 Visão Geral <span class="tag">Estrutura + Desempenho</span></h2>
+      <div class="grid g5 mb2" id="kpiRow"></div>
+      <div class="grid g3 mb2" id="kpiRow2"></div>
+      <div class="grid g12">
+        <div class="card">
+          <h3>Estrutura do Setup</h3>
+          <table id="estructuraTable"></table>
+        </div>
+        <div class="card">
+          <h3>Classificação da Estratégia</h3>
+          <div id="classifBlock"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CURVA -->
+    <section id="tab-curve">
+      <h2>📈 Curva de Capital <span class="tag">Evolução + Drawdown</span></h2>
+      <div class="card mb span2">
+        <h3>Capital Acumulado por Trade</h3>
+        <div class="chart-wrap" style="height:300px"><canvas id="curveChart"></canvas></div>
+      </div>
+      <div class="grid g3 mb">
+        <div class="card kpi gt"><div class="lbl">Comportamento</div><div class="val g" style="font-size:18px" id="curveComport">—</div><div class="sub" id="curveSub">—</div></div>
+        <div class="card kpi yt"><div class="lbl">Maior Lateralização</div><div class="val y" id="latVal">—</div><div class="sub" id="latSub">—</div></div>
+        <div class="card kpi rt"><div class="lbl">Drawdown Máximo</div><div class="val r" id="ddVal">—</div><div class="sub" id="ddSub">—</div></div>
+      </div>
+      <div class="card" id="curveAlerts"></div>
+    </section>
+
+    <!-- HORÁRIOS -->
+    <section id="tab-horarios">
+      <h2>⏰ Análise por Horário <span class="tag">Janela + Cortes + Pausas</span></h2>
+      <div class="grid g12 mb2">
+        <div class="card">
+          <h3>Janela Real de Operação</h3>
+          <div style="display:flex;gap:20px;align-items:center;margin-bottom:12px">
+            <div><div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px">Primeiro trade</div><div style="font-size:28px;font-weight:900;color:var(--accent)" id="janFirst">—</div></div>
+            <div style="font-size:22px;color:var(--muted2)">→</div>
+            <div><div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px">Último trade</div><div style="font-size:28px;font-weight:900;color:var(--accent)" id="janLast">—</div></div>
+          </div>
+          <div id="janAlert"></div>
+        </div>
+        <div class="card">
+          <h3>Performance por Hora</h3>
+          <div id="hourBars"></div>
+        </div>
+      </div>
+      <div class="grid g12 mb2">
+        <div class="card">
+          <h3>Ranking de Horários</h3>
+          <table id="hourRankTable"></table>
+        </div>
+        <div class="card">
+          <h3>Simulação de Encerramento Progressivo</h3>
+          <table id="cutoffTable"></table>
+          <div id="cutoffAlert"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Identificação de Pausas Intraday</h3>
+        <table id="pauseTable"></table>
+        <div id="pauseAlert"></div>
+      </div>
+
+      <div class="grid g12 mb2" id="fasesRow" style="margin-top:16px">
+        <div class="card">
+          <h3>🔀 Fases Detectadas Automaticamente</h3>
+          <div id="fasesBlock"></div>
+        </div>
+        <div class="card">
+          <h3>💀 Cluster de Losses por Horário</h3>
+          <table id="lossClusterTable"></table>
+          <div id="lossClusterAlert"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- DIA DA SEMANA -->
+    <section id="tab-semana">
+      <h2>📅 Dia da Semana <span class="tag">Etapa 11</span></h2>
+      <div class="grid g5 mb2" id="wdKpis"></div>
+      <div class="grid g12">
+        <div class="card">
+          <h3>Simulação — Remover Cada Dia</h3>
+          <table id="wdRemoveTable"></table>
+        </div>
+        <div class="card">
+          <h3>Concentração de Losses por Dia</h3>
+          <table id="wdLossTable"></table>
+          <div id="wdAlert"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SEQUÊNCIAS -->
+    <section id="tab-sequencias">
+      <h2>🔗 Sequências e Autocorrelação <span class="tag">Etapas 12 + 19</span></h2>
+      <div class="grid g4 mb2" id="seqKpis"></div>
+      <div class="grid g12">
+        <div class="card">
+          <h3>Sequências de Losses</h3>
+          <table id="lossSeqTable"></table>
+        </div>
+        <div class="card">
+          <h3>Autocorrelação entre Trades</h3>
+          <table id="autoCorTable"></table>
+          <div id="autoCorAlert"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- MÉTRICAS -->
+    <section id="tab-qualidade">
+      <h2>🎯 Métricas de Qualidade <span class="tag">Etapa 15</span></h2>
+      <div class="card mb2">
+        <h3>Indicadores com Faixas de Referência</h3>
+        <table id="metricsTable"></table>
+      </div>
+      <div class="grid g12">
+        <div class="card" id="payoffInterpret"></div>
+        <div class="card" id="sharpeInterpret"></div>
+      </div>
+    </section>
+
+    <!-- CONSISTÊNCIA TEMPORAL -->
+    <section id="tab-temporal">
+      <h2>📆 Consistência Temporal <span class="tag">Etapa 16</span></h2>
+      <div class="grid g4 mb2" id="monthKpis"></div>
+      <div class="grid g12 mb2">
+        <div class="card">
+          <div class="chart-wrap" style="height:220px"><canvas id="monthChart"></canvas></div>
+        </div>
+        <div class="card">
+          <h3>Resumo de Consistência</h3>
+          <table id="tempSummary"></table>
+          <div id="tempAlert"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Rolling Window — Profit Factor Evolutivo</h3>
+        <table id="rollingTable"></table>
+        <div id="rollingAlert"></div>
+      </div>
+    </section>
+
+    <!-- MONTE CARLO -->
+    <section id="tab-montecarlo">
+      <h2>🎲 Monte Carlo <span class="tag">1.000 Simulações · Etapa 17</span></h2>
+      <div class="grid g4 mb2" id="mcKpis"></div>
+      <div class="grid g12">
+        <div class="card">
+          <h3>Percentis do Lucro Final</h3>
+          <table id="mcPercTable"></table>
+          <div id="mcAlert1"></div>
+        </div>
+        <div class="card">
+          <h3>Avaliação do Risco Real</h3>
+          <div id="mcRiskBlock"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- OUTLIERS -->
+    <section id="tab-outliers">
+      <h2>⚡ Outliers e Distribuição <span class="tag">Etapa 18</span></h2>
+      <div class="grid g12 mb2">
+        <div class="card">
+          <h3>Análise de Outliers (±2σ)</h3>
+          <table id="outlierTable"></table>
+          <div id="outlierAlert"></div>
+        </div>
+        <div class="card">
+          <h3>Impacto — Remover Top 5 Gains</h3>
+          <table id="top5Table"></table>
+          <div id="top5Alert"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Distribuição dos Resultados</h3>
+        <div class="chart-wrap" style="height:180px"><canvas id="histChart"></canvas></div>
+        <div id="distAlert"></div>
+      </div>
+    </section>
+
+    <!-- CUSTOS -->
+    <section id="tab-custos">
+      <h2>💸 Custos Operacionais <span class="tag">Etapa 20</span></h2>
+      <div class="alert a mb2"><div class="ic">📌</div><div><strong>Custo fixo aplicado: R$0,35 por contrato por lado</strong> (entrada + saída separados). Baseado na nota de negociação XP: emolumentos B3 R$0,09/contrato/lado + corretagem amortizada + margem de segurança. Todos os resultados já estão no líquido.</div></div>
+      <div class="grid g4 mb2" id="custoKpis"></div>
+      <div class="grid g12">
+        <div class="card">
+          <h3>Detalhamento por Trade</h3>
+          <table id="custoTable"></table>
+        </div>
+        <div class="card">
+          <h3>Sensibilidade ao Slippage</h3>
+          <table id="slipTable"></table>
+          <div id="slipAlert"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RELATÓRIO FINAL -->
+    <section id="tab-relatorio">
+      <h2>📋 Relatório Final <span class="tag">Etapa 22 · Resumo Executivo</span></h2>
+      <div class="card mb2" style="background:linear-gradient(135deg,#e8edf8,#f0f4fc);border:1px solid var(--border)">
+        <div style="display:flex;gap:32px;align-items:center;flex-wrap:wrap">
+          <div style="text-align:center;padding:16px">
+            <div class="score-big" id="finalScore">—</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:4px">Nota Geral</div>
+            <div style="font-size:18px;color:var(--yellow);margin-top:8px" id="finalStars"></div>
+          </div>
+          <div style="flex:1;min-width:260px">
+            <h3 style="margin-bottom:10px">Avaliação Executiva</h3>
+            <p style="color:var(--muted);font-size:13px;line-height:1.8" id="finalExec"></p>
+          </div>
+        </div>
+      </div>
+      <div class="grid g2 mb2">
+        <div class="card at"><h3>Bloco 1 — Estrutura</h3><table id="rep1"></table></div>
+        <div class="card gt"><h3>Bloco 2 — Desempenho</h3><table id="rep2"></table></div>
+      </div>
+      <div class="grid g2 mb2">
+        <div class="card"><h3>Bloco 3 — Qualidade e Robustez</h3><table id="rep3"></table></div>
+        <div class="card"><h3>Bloco 4 — Otimização de Horário</h3><table id="rep4"></table></div>
+      </div>
+      <div class="grid g2 mb2">
+        <div class="card gt"><h3>✅ Pontos Fortes</h3><ul class="rec-list" id="strengths"></ul></div>
+        <div class="card rt"><h3>⚠️ Pontos Fracos</h3><ul class="rec-list" id="weaknesses"></ul></div>
+      </div>
+      <div class="card"><h3>💡 Recomendações</h3><ul class="rec-list" id="recs"></ul></div>
+    </section>
+
+    <!-- SIMULADOR DE GAIN -->
+    <section id="tab-simulador">
+      <h2>🧪 Simulador de Gain &amp; Loss <span class="tag">Varredura automática · Dados reais</span></h2>
+
+      <div class="alert a mb2">
+        <div class="ic">📌</div>
+        <div>
+          <strong>Gain menor:</strong> 100% real — o mercado já provou que chegou lá.<br>
+          <strong>Loss menor (em trades vencedores):</strong> real — sabemos que o stop mais curto não seria atingido porque o trade fechou no gain.<br>
+          <strong>Gain maior ou loss maior:</strong> não simulável sem histórico de candles — não inventamos dados.
+        </div>
+      </div>
+
+      <!-- VARREDURA AUTOMÁTICA -->
+      <div class="card mb2">
+        <h3>🔍 Varredura Automática — Melhor Combinação Gain × Loss</h3>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:14px">
+          O dashboard testa automaticamente todas as combinações possíveis de gain e loss usando os dados reais do CSV e encontra a que maximiza o Recovery Factor.
+        </div>
+        <div id="sweepLoading" style="display:none;padding:20px;text-align:center;color:var(--muted)">
+          <div class="spinner" style="margin:0 auto 12px"></div>Calculando combinações...
+        </div>
+        <div id="sweepResult"></div>
+      </div>
+
+      <!-- MATRIZ GAIN × LOSS -->
+      <div class="card mb2" id="matrixCard" style="display:none">
+        <h3>📊 Matriz Recovery Factor — Gain × Loss</h3>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Melhor RF em cada combinação. Verde = melhor que o real. Vermelho = pior. <strong>★</strong> = combinação ótima.</div>
+        <div style="overflow-x:auto"><table id="matrixTable" style="font-size:11px;min-width:500px"></table></div>
+      </div>
+
+      <!-- SIMULAÇÃO MANUAL -->
+      <div class="card mb2">
+        <h3>⚙️ Simular Combinação Específica</h3>
+        <div style="display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:12px">
+          <div>
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px">Gain (pontos)</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px" id="gainBtns"></div>
+            <input id="simGainInput" type="number" min="5" max="2000" step="5" placeholder="pts"
+              style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:13px;width:90px">
+          </div>
+          <div>
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px">Loss (pontos)</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px" id="lossBtns"></div>
+            <input id="simLossInput" type="number" min="5" max="2000" step="5" placeholder="pts"
+              style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:13px;width:90px">
+          </div>
+          <button onclick="runManualSim()" style="background:var(--accent);color:#fff;border:none;padding:8px 20px;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;align-self:flex-end">Simular</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted)">⚠️ Gain maior que o registrado no CSV fica bloqueado. Loss maior que o real não é simulável.</div>
+      </div>
+
+      <div class="grid g4 mb2" id="simKpis"></div>
+
+      <div class="grid g12 mb2">
+        <div class="card">
+          <h3>Curva de Capital Comparada</h3>
+          <div class="chart-wrap" style="height:260px"><canvas id="simCurveChart"></canvas></div>
+        </div>
+        <div class="card">
+          <h3>Impacto por Cenário de Gain</h3>
+          <table id="simScenarioTable"></table>
+        </div>
+      </div>
+
+      <div class="card mb2">
+        <h3>Resultado por Trade</h3>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Apenas trades com mudança são mostrados abaixo.</div>
+        <table id="simTradeTable"></table>
+      </div>
+
+      <div class="card" id="simInsightBox"></div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+// ══════════════════════ GLOBALS ══════════════════════
+let A = {}; // analysis results
+let charts = {};
+
+const C = {
+  accent:'#0077cc',green:'#0a7c4f',red:'#c0283a',
+  yellow:'#a06000',purple:'#5b3fcf',muted:'#8892b0',
+  bg:'#ffffff',border:'#dde2ee'
+};
+Chart.defaults.color='#5a6480';
+Chart.defaults.borderColor='#dde2ee';
+Chart.defaults.font.family="'Segoe UI',system-ui,sans-serif";
+Chart.defaults.font.size=12;
+
+// ══════════════════════ UPLOAD LOGIC ══════════════════════
+const dropZone=document.getElementById('dropZone');
+const fileInput=document.getElementById('fileInput');
+
+// Click anywhere on dropZone opens file picker
+dropZone.addEventListener('click',()=>fileInput.click());
+
+// Drag & drop on dropZone
+dropZone.addEventListener('dragover',e=>{e.preventDefault();e.stopPropagation();dropZone.classList.add('drag')});
+dropZone.addEventListener('dragleave',e=>{e.preventDefault();dropZone.classList.remove('drag')});
+dropZone.addEventListener('drop',e=>{
+  e.preventDefault();e.stopPropagation();
+  dropZone.classList.remove('drag');
+  const f=e.dataTransfer.files[0];
+  if(f)processFile(f);
+});
+
+// Also listen at document level to catch any missed drops
+document.addEventListener('dragover',e=>e.preventDefault());
+document.addEventListener('drop',e=>{
+  e.preventDefault();
+  const f=e.dataTransfer.files[0];
+  if(f&&document.getElementById('uploadScreen').style.display!=='none')processFile(f);
+});
+
+// File input change (fallback)
+fileInput.addEventListener('change',e=>{
+  const f=e.target.files[0];
+  if(f)processFile(f);
+  fileInput.value=''; // reset so same file can be re-selected
+});
+
+function resetApp(){
+  document.getElementById('uploadScreen').style.display='flex';
+  document.getElementById('dashboard').style.display='none';
+  document.getElementById('loadingScreen').style.display='none';
+  try{fileInput.value='';}catch(e){}
+  Object.values(charts).forEach(c=>{try{c.destroy()}catch(e){}});
+  charts={};A={};
+  // Reset loading steps
+  for(let i=1;i<=7;i++){
+    const el=document.getElementById('ls'+i);
+    if(el){el.classList.remove('done');el.querySelector('.dot').style.background='';}
+  }
+}
+
+async function processFile(file){
+  document.getElementById('uploadScreen').style.display='none';
+  document.getElementById('loadingScreen').style.display='flex';
+  await sleep(50);
+  const text=await file.text();
+  step(1);await sleep(120);
+  A=analyze(text,file.name.replace(/\.csv$/i,''));
+  step(2);await sleep(100);
+  step(3);await sleep(80);
+  step(4);await sleep(80);
+  step(5);await sleep(200);
+  step(6);await sleep(80);
+  step(7);await sleep(80);
+  renderDashboard();
+  document.getElementById('loadingScreen').style.display='none';
+  document.getElementById('dashboard').style.display='block';
+}
+
+function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+function step(n){
+  const el=document.getElementById('ls'+n);
+  if(el){el.classList.add('done');el.querySelector('.dot').style.background=C.green}
+}
+
+// ══════════════════════ CSV PARSER ══════════════════════
+function parseBR(s){
+  if(!s||s==='-')return null;
+  return parseFloat(s.replace(/\./g,'').replace(',','.'));
+}
+function parseCSV(text){
+  const lines=text.trim().split(/\r?\n/);
+  const rows=[];
+  for(let i=1;i<lines.length;i++){
+    const cols=lines[i].split(';').map(c=>c.trim().replace(/^"|"$/g,''));
+    if(cols.length<13)continue;
+    rows.push(cols);
+  }
+  return rows;
+}
+
+// ══════════════════════ CORE ANALYSIS ══════════════════════
+function analyze(text,filename){
+  const rows=parseCSV(text);
+
+  // ── Separar entradas e saídas, deduplicar linhas duplicadas ──
+  const seenSaida=new Set(), seenEntrada=new Set();
+  const exitRows=[], entryRows=[];
+  for(const r of rows){
+    const tipo=(r[7]||'').toLowerCase();
+    const dtStr=(r[1]||'').trim();
+    if(tipo==='entrada'){
+      if(seenEntrada.has(dtStr))continue;
+      seenEntrada.add(dtStr);
+      const dt=parseDT(dtStr);
+      const entryPrice=parseBR(r[9]);
+      if(dt)entryRows.push({dt,date:fmtDate(dt),entryPrice:entryPrice||0});
+      continue;
+    }
+    if(tipo!=='saída'&&tipo!=='saida')continue;
+    const res=parseBR(r[12]);
+    if(res===null)continue;
+    const dt=parseDT(dtStr);
+    if(!dt)continue;
+    const key=dtStr+'|'+ r[12];
+    if(seenSaida.has(key))continue;
+    seenSaida.add(key);
+    const exitPrice=parseBR(r[9]);
+    exitRows.push({dt,date:fmtDate(dt),resultado:res,exitPrice:exitPrice||0});
+  }
+  exitRows.sort((a,b)=>a.dt-b.dt);
+  entryRows.sort((a,b)=>a.dt-b.dt);
+
+  // ── Parear entrada ↔ saída: para cada saída, achar entrada mais próxima anterior ──
+  const trades=[];
+  const usedEntries=new Set();
+  for(const ex of exitRows){
+    let bestEntry=null,bestIdx=-1;
+    // Buscar entrada no mesmo dia
+    for(let i=0;i<entryRows.length;i++){
+      if(usedEntries.has(i))continue;
+      const en=entryRows[i];
+      if(en.date===ex.date&&en.dt<=ex.dt){
+        if(!bestEntry||en.dt>bestEntry.dt){bestEntry=en;bestIdx=i}
+      }
+    }
+    // Se não achou, buscar no dia anterior (máx 24h)
+    if(!bestEntry){
+      for(let i=0;i<entryRows.length;i++){
+        if(usedEntries.has(i))continue;
+        const en=entryRows[i];
+        const diff=ex.dt-en.dt;
+        if(diff>0&&diff<86400000){
+          if(!bestEntry||en.dt>bestEntry.dt){bestEntry=en;bestIdx=i}
+        }
+      }
+    }
+    if(bestIdx>=0)usedEntries.add(bestIdx);
+    // Horário da ENTRADA para análise de horário
+    const entryDt=bestEntry?bestEntry.dt:ex.dt;
+    const durationMin=bestEntry?Math.round((ex.dt-bestEntry.dt)/6000)/10:0;
+    // Calcular movimento em pontos (preço de saída - preço de entrada)
+    // positivo = mercado foi a favor, negativo = foi contra
+    const entryPx=bestEntry?bestEntry.entryPrice:0;
+    const exitPx=ex.exitPrice||0;
+    // Detectar direção: se C/V da saída indica short ou long
+    // resultado positivo com exitPx > entryPx = long; negativo com exitPx < entryPx = short
+    // Movimento real em pontos (sempre positivo = quanto o mercado se moveu)
+    const priceDiff=entryPx&&exitPx?Math.abs(exitPx-entryPx):0;
+    // Pontos a favor = priceDiff quando resultado > 0, undefined when loss
+    const ptsCapturado=ex.resultado>0?priceDiff:0;
+
+    // Custo fixo: R$0,35 por contrato por lado (entrada + saída)
+    const COST_PER_CONTRACT_PER_SIDE = 0.35;
+    const tradeQty = ex.qty || 1;
+    const tradeCost = tradeQty * 2 * COST_PER_CONTRACT_PER_SIDE; // 2 lados
+    const netResultado = ex.resultado - tradeCost;
+
+    trades.push({
+      dt:ex.dt,entryDt,
+      date:ex.date,
+      hour:entryDt.getHours(),      // ← ENTRADA
+      minute:entryDt.getMinutes(),  // ← ENTRADA
+      exitHour:ex.dt.getHours(),
+      exitMinute:ex.dt.getMinutes(),
+      resultado:ex.resultado,       // bruto
+      netResultado,                 // líquido (após custos)
+      tradeCost,                    // custo deste trade
+      qty:tradeQty,
+      weekday:ex.dt.getDay(),
+      month:ex.dt.getMonth()+1,
+      year:ex.dt.getFullYear(),
+      durationMin,
+      entryPrice:entryPx,
+      exitPrice:exitPx,
+      ptsCapturado,
+    });
+  }
+  trades.sort((a,b)=>a.dt-b.dt);
+  if(trades.length===0)return {error:'Nenhum trade encontrado. Verifique o formato do CSV.'};
+
+  // Janela operacional = horário de ENTRADA
+  const entryMinutes=trades.map(t=>t.hour*60+t.minute);
+  const winMin=Math.min(...entryMinutes);
+  const winMax=Math.max(...entryMinutes);
+  const winMinH=Math.floor(winMin/60),winMinM=winMin%60;
+  const winMaxH=Math.floor(winMax/60),winMaxM=winMax%60;
+
+  // Duração média dos trades
+  const durations=trades.map(t=>t.durationMin).filter(d=>d>0).sort((a,b)=>a-b);
+  const durationMed=durations.length?durations[Math.floor(durations.length/2)]:0;
+  const durationAvg=durations.length?durations.reduce((a,b)=>a+b,0)/durations.length:0;
+
+
+  // ── Basic stats — tudo calculado no LÍQUIDO (após custos) ──
+  const results=trades.map(t=>t.netResultado);       // líquido
+  const resultsGross=trades.map(t=>t.resultado);     // bruto (referência)
+  const gains=results.filter(r=>r>0);
+  const losses=results.filter(r=>r<0);
+  const n=results.length;
+  const totalProfit=sum(results);                    // líquido
+  const totalProfitGross=sum(resultsGross);          // bruto
+  const totalCostAll=trades.reduce((a,t)=>a+t.tradeCost,0);
+  const grossProfit=sum(gains);
+  const grossLoss=Math.abs(sum(losses));
+  const pf=grossLoss>0?grossProfit/grossLoss:Infinity;
+  const wr=gains.length/n;
+  const avgGain=gains.length?mean(gains):0;
+  const avgLoss=losses.length?Math.abs(mean(losses)):0;
+  const payoff=avgLoss>0?avgGain/avgLoss:0;
+  const breakEvenWR=avgLoss>0?avgLoss/(avgGain+avgLoss):0;
+  const em=wr*avgGain-(1-wr)*avgLoss;
+  // Avg contracts (from CSV)
+  const avgQty=trades.length?trades.reduce((a,t)=>a+t.qty,0)/trades.length:1;
+  const costPerTradeFmt=trades.length?totalCostAll/trades.length:0;
+
+  // Capital curve & drawdown
+  let cap=0,peak=0,maxDD=0,ddPeak=0,ddIdx=-1;
+  let latStart=0,maxLat=0,latRange=[0,0];
+  const curve=[];
+  for(let i=0;i<n;i++){
+    cap+=results[i];curve.push(cap);
+    if(cap>peak){
+      if(i-latStart>maxLat){maxLat=i-latStart;latRange=[latStart,i]}
+      peak=cap;latStart=i;
+    }
+    const dd=peak-cap;
+    if(dd>maxDD){maxDD=dd;ddIdx=i}
+  }
+  const rf=maxDD>0?totalProfit/maxDD:Infinity;
+
+
+  // Daily returns → Sharpe
+  const byDate={};
+  for(const t of trades){if(!byDate[t.date])byDate[t.date]=0;byDate[t.date]+=t.resultado}
+  const dailyRets=Object.values(byDate);
+  const meanD=mean(dailyRets);
+  const stdD=std(dailyRets);
+  const sharpe=stdD>0?meanD/stdD:0;
+
+  // By hour (usando horário de ENTRADA)
+  const byHour={};
+  for(const t of trades){
+    if(!byHour[t.hour])byHour[t.hour]={n:0,profit:0,wins:0,losses:0,lossVal:0};
+    byHour[t.hour].n++;byHour[t.hour].profit+=t.resultado;
+    if(t.resultado>0)byHour[t.hour].wins++;
+    else{byHour[t.hour].losses++;byHour[t.hour].lossVal+=t.resultado;}
+  }
+
+  // Cluster de losses por horário (concentração de prejuízo)
+  const lossCluster=Object.entries(byHour)
+    .filter(([h,hd])=>hd.losses>0)
+    .sort((a,b)=>a[1].losses-b[1].losses) // sort asc, worst last
+    .reverse()
+    .map(([h,hd])=>({hour:+h,losses:hd.losses,lossVal:hd.lossVal,
+      pctOfLosses:losses.length>0?hd.losses/losses.length:0}));
+
+  // ── Detecção automática de fases ──
+  // Fases são definidas por mudança no número de contratos OU gaps grandes entre trades
+  // Detecta via quantidade de trades executados (qty) no CSV ou via date gaps
+  const phases=[];
+  if(trades.length>0){
+    // Agrupar trades por fase — detectar mudança de comportamento
+    // Proxy: dividir onde ocorre primeiro loss (se fase 1 tem zero losses)
+    const firstLossIdx=trades.findIndex(t=>t.resultado<0);
+    if(firstLossIdx>5){ // fase 1 significativa
+      const ph1trades=trades.slice(0,firstLossIdx);
+      const ph2trades=trades.slice(firstLossIdx);
+      const ph1R=ph1trades.map(t=>t.resultado);
+      const ph2R=ph2trades.map(t=>t.resultado);
+      const ph1G=ph1R.filter(r=>r>0);const ph1L=ph1R.filter(r=>r<0);
+      const ph2G=ph2R.filter(r=>r>0);const ph2L=ph2R.filter(r=>r<0);
+      phases.push({
+        label:'Fase 1',
+        desc:`${ph1trades[0].date} → ${ph1trades[ph1trades.length-1].date}`,
+        n:ph1trades.length,
+        profit:ph1R.reduce((a,b)=>a+b,0),
+        wins:ph1G.length,losses:ph1L.length,
+        avgGain:ph1G.length?ph1G.reduce((a,b)=>a+b,0)/ph1G.length:0,
+        avgLoss:ph1L.length?Math.abs(ph1L.reduce((a,b)=>a+b,0)/ph1L.length):0,
+        pf:ph1L.length===0?Infinity:ph1G.reduce((a,b)=>a+b,0)/Math.abs(ph1L.reduce((a,b)=>a+b,0)),
+        wr:ph1G.length/ph1trades.length,
+      });
+      phases.push({
+        label:'Fase 2',
+        desc:`${ph2trades[0].date} → ${ph2trades[ph2trades.length-1].date}`,
+        n:ph2trades.length,
+        profit:ph2R.reduce((a,b)=>a+b,0),
+        wins:ph2G.length,losses:ph2L.length,
+        avgGain:ph2G.length?ph2G.reduce((a,b)=>a+b,0)/ph2G.length:0,
+        avgLoss:ph2L.length?Math.abs(ph2L.reduce((a,b)=>a+b,0)/ph2L.length):0,
+        pf:ph2L.length===0?Infinity:ph2G.reduce((a,b)=>a+b,0)/Math.abs(ph2L.reduce((a,b)=>a+b,0)),
+        wr:ph2G.length/ph2trades.length,
+      });
+    }
+  }
+
+  // By weekday
+  const wdNames=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const byWD={};
+  for(const t of trades){
+    if(!byWD[t.weekday])byWD[t.weekday]={n:0,profit:0,wins:0,losses:0,lossVal:0};
+    const w=byWD[t.weekday];w.n++;w.profit+=t.resultado;
+    if(t.resultado>0)w.wins++;else{w.losses++;w.lossVal+=t.resultado}
+  }
+
+  // By month
+  const byMonth={};
+  for(const t of trades){
+    const k=`${t.year}-${String(t.month).padStart(2,'0')}`;
+    if(!byMonth[k])byMonth[k]={n:0,profit:0,wins:0};
+    byMonth[k].n++;byMonth[k].profit+=t.resultado;
+    if(t.resultado>0)byMonth[k].wins++;
+  }
+  const monthKeys=Object.keys(byMonth).sort();
+  const monthProfits=monthKeys.map(k=>byMonth[k].profit);
+  const posMonths=monthProfits.filter(p=>p>0).length;
+
+  // ── Detecção automática do timeframe pelo durationMed ──
+  // durationMed = duração mediana dos trades em minutos
+  // Isso revela o timeframe real do gráfico usado pelo robô
+  // Detecção automática de timeframe pela duração mediana dos trades
+  // Um trade de 1 min dura em média até 2x o TF (1-3min para TF=1min)
+  // Um trade de 5 min dura em média 5-15min, etc.
+  let detectedTF=1;
+  if(durationMed>=40)detectedTF=30;
+  else if(durationMed>=12)detectedTF=15;
+  else if(durationMed>=4)detectedTF=5;
+  else if(durationMed>=2)detectedTF=3;
+  else detectedTF=1;
+
+  // Granularidade dos cortes = timeframe detectado
+  // Granularidade das pausas = 2x a granularidade dos cortes (blocos maiores)
+  const cutStep=detectedTF<=1?1:detectedTF<=3?3:detectedTF<=5?5:detectedTF<=15?10:15;
+  const pauseStep=cutStep*2;
+
+  // ── Simulação de encerramento progressivo (granularidade do TF) ──
+  const cutoffSims=[];
+  let cm=winMin+cutStep;
+  while(cm<=winMax+cutStep){
+    const ch=Math.floor(cm/60),cmin=cm%60;
+    const filtered=trades.filter(t=>t.hour*60+t.minute<=cm);
+    if(filtered.length>0){
+      const rs=filtered.map(t=>t.resultado);
+      const g=rs.filter(r=>r>0);
+      let c2=0,pk2=0,dd2=0;
+      for(const r of rs){c2+=r;if(c2>pk2)pk2=c2;if(pk2-c2>dd2)dd2=pk2-c2}
+      cutoffSims.push({label:`${String(ch).padStart(2,'0')}:${String(cmin).padStart(2,'0')}`,
+        n:rs.length,profit:sum(rs),dd:dd2,wr:g.length/rs.length,minutes:cm});
+    }
+    cm+=cutStep;
+  }
+  // Find best cutoff: score = profit * wr / (dd+1)
+  let bestCut=null,bestScore=-Infinity;
+  for(const s of cutoffSims){
+    const score=(s.profit*s.wr)/(s.dd+1);
+    if(score>bestScore){bestScore=score;bestCut=s}
+  }
+
+  // ── Simulação de pausas intraday (granularidade do TF) ──
+  const pauseSims=[];
+  let pm=winMin;
+  while(pm+pauseStep<=winMax){
+    const pm2=pm+pauseStep;
+    const excluded=trades.filter(t=>{const tm=t.hour*60+t.minute;return tm>=pm&&tm<pm2});
+    const included=trades.filter(t=>{const tm=t.hour*60+t.minute;return tm<pm||tm>=pm2});
+    const rs=included.map(t=>t.resultado);
+    if(rs.length===0){pm+=pauseStep;continue}
+    const g=rs.filter(r=>r>0);
+    let c2=0,pk2=0,dd2=0;
+    for(const r of rs){c2+=r;if(c2>pk2)pk2=c2;if(pk2-c2>dd2)dd2=pk2-c2}
+    const lostProfit=sum(excluded.map(t=>t.resultado));
+    const ch=Math.floor(pm/60),cmin=pm%60;
+    const ch2=Math.floor(pm2/60),cmin2=pm2%60;
+    pauseSims.push({label:`${String(ch).padStart(2,'0')}:${String(cmin).padStart(2,'0')}–${String(ch2).padStart(2,'0')}:${String(cmin2).padStart(2,'0')}`,
+      n:rs.length,profit:sum(rs),dd:dd2,wr:g.length/rs.length,lostProfit,removed:excluded.length});
+    pm+=pauseStep;
+  }
+  // Best pause: highest profit gain vs baseline
+  let bestPause=null,bestPauseScore=-Infinity;
+  for(const s of pauseSims){
+    const score=s.profit-totalProfit;
+    if(score>bestPauseScore){bestPauseScore=score;bestPause=s}
+  }
+
+  // Loss sequences
+  let curSeq=0,maxLossSeq=0;const lossSeqs=[];
+  let curWin=0,maxWinSeq=0;const winSeqs=[];
+  for(const r of results){
+    if(r<0){if(curWin>0){winSeqs.push(curWin);curWin=0}curSeq++}
+    else{if(curSeq>0){lossSeqs.push(curSeq);if(curSeq>maxLossSeq)maxLossSeq=curSeq;curSeq=0}curWin++}
+  }
+  if(curSeq>0){lossSeqs.push(curSeq);if(curSeq>maxLossSeq)maxLossSeq=curSeq}
+  if(curWin>0){winSeqs.push(curWin);if(curWin>maxWinSeq)maxWinSeq=curWin}
+
+  // Autocorrelation
+  let ggCount=0,ggTotal=0,lgCount=0,lgTotal=0;
+  for(let i=1;i<results.length;i++){
+    if(results[i-1]>0){ggTotal++;if(results[i]>0)ggCount++}
+    else{lgTotal++;if(results[i]>0)lgCount++}
+  }
+  const pGivenG=ggTotal>0?ggCount/ggTotal:wr;
+  const pGivenL=lgTotal>0?lgCount/lgTotal:wr;
+
+  // Rolling PF por número de trades (10 e 20) — mais preciso para setups com 1 trade/dia
+  function rollingPF(tradeList, window){
+    if(tradeList.length<window)return null;
+    const last=tradeList.slice(-window).map(t=>t.resultado);
+    const g=last.filter(r=>r>0);const l=last.filter(r=>r<0);
+    const gSum=g.reduce((a,b)=>a+b,0);const lSum=Math.abs(l.reduce((a,b)=>a+b,0));
+    return lSum>0?gSum/lSum:Infinity;
+  }
+  const rolling10=rollingPF(trades,10);
+  const rolling20=rollingPF(trades,20);
+  // Também manter rolling mensal para tabela de consistência
+  const rolling=[];
+  if(monthKeys.length>=2){
+    for(let i=1;i<monthKeys.length;i++){
+      const window2=[monthKeys[i-1],monthKeys[i]];
+      const wTrades=trades.filter(t=>{const k=`${t.year}-${String(t.month).padStart(2,'0')}`;return window2.includes(k)});
+      const wR=wTrades.map(t=>t.resultado);
+      const wG=wR.filter(r=>r>0);const wL=wR.filter(r=>r<0);
+      const wPF=Math.abs(sum(wL))>0?sum(wG)/Math.abs(sum(wL)):Infinity;
+      rolling.push({label:`${window2[0]} a ${window2[1]}`,pf:wPF,n:wR.length,profit:sum(wR)});
+    }
+  }
+
+  // Monte Carlo
+  const MC_N=1000;
+  const mcProfits=[],mcDDs=[];
+  const seed=42;let rngState=seed;
+  function rng(){rngState=(rngState*1664525+1013904223)>>>0;return rngState/4294967296}
+  for(let s=0;s<MC_N;s++){
+    const seq=[...results];
+    for(let i=seq.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[seq[i],seq[j]]=[seq[j],seq[i]]}
+    let c=0,pk=0,dd=0;
+    for(const r of seq){c+=r;if(c>pk)pk=c;if(pk-c>dd)dd=pk-c}
+    mcProfits.push(c);mcDDs.push(dd);
+  }
+  mcProfits.sort((a,b)=>a-b);mcDDs.sort((a,b)=>a-b);
+  const mcDDMean=mean(mcDDs);
+  const mcDDP95=mcDDs[Math.floor(MC_N*0.95)];
+  const mcProbDD200=mcDDs.filter(d=>d>200).length/MC_N;
+  const mcProbDD500=mcDDs.filter(d=>d>500).length/MC_N;
+  const mcPerc={p5:mcProfits[49],p25:mcProfits[249],p50:mcProfits[499],p75:mcProfits[749],p95:mcProfits[949]};
+
+  // Outliers
+  const meanR=mean(results),stdR=std(results);
+  const outGains=results.filter(r=>r>meanR+2*stdR);
+  const outLosses=results.filter(r=>r<meanR-2*stdR);
+  // Top 5 gains removal
+  const sortedGains=[...gains].sort((a,b)=>b-a);
+  const removeScenarios=[1,3,5,10].map(k=>{
+    const removed=sortedGains.slice(0,Math.min(k,sortedGains.length));
+    return{k,profit:totalProfit-sum(removed)};
+  });
+
+  // Classification
+  let classif,classifDesc;
+  if(wr>0.75&&payoff<0.8){classif='Reversão / Mean-Reversion';classifDesc='Taxa de acerto elevada com payoff invertido (gain < loss). O robô captura muitos ganhos pequenos e aceita poucos losses maiores — assinatura clássica de estratégia de reversão ao meio.'}
+  else if(payoff>1.5&&wr<0.55){classif='Tendência / Trend Following';classifDesc='Payoff elevado com acerto moderado. O robô opera com losses pequenos frequentes e busca movimentos direcionais expressivos — comportamento de estratégia de tendência.'}
+  else if(payoff>0.9&&wr>0.55&&wr<0.7){classif='Scalping Equilibrado';classifDesc='Relação payoff próxima de 1 com acerto moderado a bom. Característica de scalping com alvos e stops similares, sem concentração extrema em nenhum lado.'}
+  else if(payoff<1&&wr>0.6){classif='Breakout / Pullback';classifDesc='Combinação de acerto médio-alto com payoff próximo ou abaixo de 1. Sugere entradas em rompimentos ou pullbacks onde o setup precisa de acerto consistente.'}
+  else{classif='Estratégia Mista';classifDesc='Parâmetros não se encaixam em uma única categoria dominante. Pode ser uma combinação de lógicas ou um regime de mercado variável.'}
+
+  // Score calculation
+  let score=5;
+  if(pf>2)score++;if(pf>3)score+=0.5;if(pf>4)score+=0.5;
+  if(wr>0.7)score+=0.5;if(wr>0.8)score+=0.5;
+  if(rf>5)score++;if(rf>8)score+=0.5;
+  if(sharpe>1)score+=0.5;
+  if(posMonths===monthKeys.length)score+=0.5;
+  if(mcDDP95<grossLoss*2)score+=0.3;
+  // penalties
+  const recentPF=rolling20!==null?rolling20:(rolling.length>0?rolling[rolling.length-1].pf:pf);
+  if(recentPF<pf*0.8)score-=0.7;
+  if(maxLossSeq>4)score-=0.3;
+  score=Math.min(10,Math.max(1,Math.round(score*10)/10));
+
+  // Costs (estimates for WIN 1 contract)
+  const costPerTrade=2.5; // R$ estimate
+  const totalCost=costPerTrade*n;
+  const netProfit=totalProfit-totalCost;
+  const costPct=totalProfit>0?totalCost/totalProfit*100:0;
+
+  // Lateralization dates
+  const latDates=latRange[1]<n?[trades[latRange[0]].date,trades[latRange[1]].date]:['—','—'];
+
+  return{
+    filename,n,trades,results,gains,losses,
+    totalProfit,grossProfit,grossLoss,pf,wr,avgGain,avgLoss,payoff,breakEvenWR,em,
+    curve,maxDD,ddIdx,rf,latMax:maxLat,latDates,
+    winMin,winMax,winMinH,winMinM,winMaxH,winMaxM,
+    sharpe,meanD,stdD,byHour,byWD,wdNames,byMonth,monthKeys,monthProfits,posMonths,
+    cutoffSims,bestCut,pauseSims,bestPause,
+    maxLossSeq,maxWinSeq,lossSeqs,winSeqs,pGivenG,pGivenL,
+    rolling,rolling10,rolling20,recentPF,durationMed,durationAvg,
+    mcDDMean,mcDDP95,mcProbDD200,mcProbDD500,mcPerc,
+    meanR,stdR,outGains,outLosses,removeScenarios,
+    classif,classifDesc,score,
+    costPerTrade,totalCost,netProfit,costPct,
+    startDate:trades[0].date,endDate:trades[n-1].date,
+    detectedTF,cutStep,pauseStep,
+    totalProfitGross,totalCostAll,costPerTradeFmt,avgQty,
+    avgPtsCapturado:trades.filter(t=>t.ptsCapturado>0).length?
+      trades.filter(t=>t.ptsCapturado>0).reduce((a,t)=>a+t.ptsCapturado,0)/trades.filter(t=>t.ptsCapturado>0).length:0,
+    phases,lossCluster,
+  };
+}
+
+// ══════════════════════ HELPERS ══════════════════════
+function parseDT(s){
+  // DD/MM/YYYY / HH:MM:SS or DD/MM/YYYY HH:MM:SS
+  const m=s.match(/(\d{2})\/(\d{2})\/(\d{4})[^0-9]+(\d{2}):(\d{2}):(\d{2})/);
+  if(!m)return null;
+  return new Date(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+m[6]);
+}
+function fmtDate(d){return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+function fmtTime(h,m){return`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`}
+function sum(arr){return arr.reduce((a,b)=>a+b,0)}
+function mean(arr){return arr.length?sum(arr)/arr.length:0}
+function std(arr){if(arr.length<2)return 0;const m=mean(arr);return Math.sqrt(sum(arr.map(x=>(x-m)**2))/(arr.length-1))}
+function fmt(n,dec=0){return n.toLocaleString('pt-BR',{minimumFractionDigits:dec,maximumFractionDigits:dec})}
+function fmtR(n,dec=0){return`R$ ${fmt(n,dec)}`}
+function pct(n,dec=1){return`${(n*100).toFixed(dec)}%`}
+function badge(text,cls){return`<span class="badge ${cls}">${text}</span>`}
+function row(a,b,cls=''){return`<tr><td>${a}</td><td class="${cls}">${b}</td></tr>`}
+function hrow(cols){return`<tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr>`}
+function trow(cols){return`<tr>${cols.map((c,i)=>(typeof c==='object')?`<td class="${c.cls||''}">${c.v}</td>`:`<td>${c}</td>`).join('')}</tr>`}
+function alertBox(cls,icon,html){return`<div class="alert ${cls}"><div class="ic">${icon}</div><div>${html}</div></div>`}
+function kpiCard(lbl,val,sub,cls='',border=''){return`<div class="card kpi ${border}"><div class="lbl">${lbl}</div><div class="val ${cls}">${val}</div><div class="sub">${sub}</div></div>`}
+
+function pfStatus(pf){if(pf>=4)return['g','EXCELENTE'];if(pf>=2)return['g','BOM'];if(pf>=1.3)return['y','FRÁGIL'];return['r','RUIM']}
+function rfStatus(rf){if(rf>=8)return['g','EXCELENTE'];if(rf>=5)return['g','BOM'];if(rf>=2)return['y','FRACO'];return['r','RUIM']}
+function sharpeStatus(sh){if(sh>=2)return['g','EXCELENTE'];if(sh>=1)return['g','BOM'];if(sh>=0.5)return['y','ABAIXO'];return['r','RUIM']}
+
+// ══════════════════════ TAB NAVIGATION ══════════════════════
+
+
+// ══════════════════════ RENDER DASHBOARD ══════════════════════
+function renderDashboard(){
+  if(A.error){alert(A.error);return}
+  const d=A;
+
+  // Header
+  document.getElementById('hTitle').textContent=d.filename||'Setup';
+  document.getElementById('hPeriod').textContent=`${d.startDate} → ${d.endDate} · ${d.n} trades`;
+  document.getElementById('hNote').textContent=d.score.toFixed(1);
+
+  renderOverview();
+  renderCurve();
+  renderHorarios();
+  renderSemana();
+  renderSequencias();
+  renderQualidade();
+  renderTemporal();
+  renderMonteCarlo();
+  renderOutliers();
+  renderCustos();
+  renderRelatorio();
+}
+
+// ── OVERVIEW ──
+function renderOverview(){
+  const d=A;
+  const [pfCls]=pfStatus(d.pf);
+  document.getElementById('kpiRow').innerHTML=[
+    kpiCard('Resultado Líquido',fmtR(d.totalProfit),`Bruto: ${fmtR(d.totalProfitGross)} · Custos: ${fmtR(d.totalCostAll)}`,d.totalProfit>=0?'g':'r',d.totalProfit>=0?'gt':'rt'),
+    kpiCard('Taxa de Acerto',pct(d.wr),`${d.gains.length} wins / ${d.losses.length} losses (líquido)`,'g','gt'),
+    kpiCard('Profit Factor',fmt(d.pf,3),'Calculado no líquido',pfCls,'at'),
+    kpiCard('Drawdown Máximo',fmtR(d.maxDD),d.maxDD>0?`${pct(d.maxDD/Math.max(1,d.totalProfitGross))} do bruto`:'Sem drawdown','r','rt'),
+    kpiCard('Recovery Factor',fmt(d.rf,2),'Ref: excelente > 5.0',d.rf>=5?'g':'y','gt'),
+  ].join('');
+  document.getElementById('kpiRow2').innerHTML=[
+    kpiCard('Expectativa Matemática',fmtR(d.em,2),'por trade operado',d.em>0?'g':'r',''),
+    kpiCard('Payoff Médio Real',fmt(d.payoff,3),`Gain médio ${fmtR(d.avgGain,2)} / Loss médio ${fmtR(d.avgLoss,2)}`,d.payoff>=1?'g':'y',''),
+    kpiCard('Sharpe Adaptado',fmt(d.sharpe,3),'Diário — ref: bom > 1.0',d.sharpe>=1?'g':'y',''),
+  ].join('');
+
+  document.getElementById('estructuraTable').innerHTML=
+    hrow(['Parâmetro','Valor'])+
+    row('Ativo','WIN — Mini Índice Futuro')+
+    row('Período',`${d.startDate} → ${d.endDate}`)+
+    row('Total de trades',d.n)+
+    row('Frequência média',`${(d.n/Math.max(1,monthKeys2months(d.monthKeys))).toFixed(1)} trades/mês`)+
+    row('Contratos (média)',`${d.avgQty?d.avgQty.toFixed(1):1} contratos`)+
+    row('Custo por trade',`<strong style="color:var(--red)">${fmtR(d.costPerTradeFmt,2)}</strong> (R$0,35/contrato/lado)`)+
+    row('Gain médio observado',`<span class="pos">${fmtR(d.avgGain,2)}</span>`)+
+    row('Loss médio observado',`<span class="neg">${fmtR(d.avgLoss,2)}</span>`)+
+    row('Janela operacional',`${fmtTime(d.winMinH,d.winMinM)} → ${fmtTime(d.winMaxH,d.winMaxM)}`)+
+    row('Duração mediana dos trades',d.durationMed>0?`${d.durationMed} min`:'N/D')+
+    row('Taxa mínima de breakeven',pct(d.breakEvenWR));
+
+  const phaseSummary=d.phases&&d.phases.length>0?
+    `<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">Fases detectadas</div>
+      ${d.phases.map(ph=>`<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;margin-right:12px;margin-bottom:4px">
+        <span style="width:8px;height:8px;border-radius:50%;background:${ph.losses===0?'var(--green)':'var(--yellow)'}"></span>
+        <strong>${ph.label}</strong> — ${ph.n} trades · ${pct(ph.wr)} acerto · ${ph.losses===0?'zero losses':''+ph.losses+' losses'}
+      </span>`).join('')}
+    </div>`:'';
+  document.getElementById('classifBlock').innerHTML=`
+    <div style="margin-bottom:14px">${badge(d.classif,'p')} ${d.wr>0.7?badge('Alta Precisão','g'):''}</div>
+    <p style="color:var(--muted);font-size:13px;line-height:1.75">${d.classifDesc}</p>
+    ${alertBox('g','✅','<strong>Distribuição identificada:</strong> '+distType(d))}
+    ${phaseSummary}
+  `;
+}
+
+function monthKeys2months(keys){return keys.length||1}
+function distType(d){
+  if(d.wr>0.7&&d.payoff<0.8)return'Assimétrica negativa — muitos ganhos pequenos, poucos losses grandes. Característico de reversão.';
+  if(d.payoff>1.5&&d.wr<0.55)return'Assimétrica positiva — muitos losses pequenos, poucos ganhos grandes. Característico de tendência.';
+  return'Distribuição próxima do equilíbrio — scalping ou estratégia mista.';
+}
+
+// ── CURVE ──
+function renderCurve(){
+  const d=A;
+  // Behavior classification
+  let comport='Ascendente Suave',comportSub='Curva linear e estável';
+  const ddRatio=d.maxDD/Math.max(1,d.totalProfit);
+  if(ddRatio>0.5){comport='Volátil';comportSub='Alta volatilidade na curva'}
+  else if(d.latMax>10){comport='Escada com Lateralizações';comportSub=`${d.latMax} trades sem novo topo`}
+  else if(ddRatio<0.15&&d.wr>0.75){comport='Escada Ascendente Suave';comportSub='Ideal para apresentação a clientes'}
+  document.getElementById('curveComport').textContent=comport;
+  document.getElementById('curveSub').textContent=comportSub;
+  document.getElementById('latVal').textContent=`${d.latMax} trades`;
+  document.getElementById('latSub').textContent=d.latMax>0?`${d.latDates[0]} → ${d.latDates[1]}`:'Sem lateralização significativa';
+  document.getElementById('ddVal').textContent=fmtR(d.maxDD);
+  document.getElementById('ddSub').textContent=d.ddIdx>=0?`Trade #${d.ddIdx+1} · ${d.trades[d.ddIdx].date}`:'—';
+
+  document.getElementById('curveAlerts').innerHTML=
+    alertBox(ddRatio<0.2?'g':'y','📈',`A curva apresenta comportamento <strong>${comport}</strong>. `+
+      `Drawdown de ${fmtR(d.maxDD)} representa ${pct(ddRatio)} do lucro total. `+
+      (ddRatio<0.15?'Excelente para retenção de clientes.':'Monitorar períodos de drawdown.'))+
+    (d.latMax>5?alertBox('y','⚠️',`A maior lateralização durou <strong>${d.latMax} trades</strong> sem novo topo. Pode causar desconforto psicológico em clientes.`):'');
+}
+
+function renderCurveChart(){
+  if(charts.curve)return;
+  const ctx=document.getElementById('curveChart').getContext('2d');
+  const labels=A.trades.map(t=>t.date.slice(5));
+  const caps=A.curve;
+  const ptColors=A.results.map(r=>r>=0?C.green:C.red);
+  charts.curve=new Chart(ctx,{
+    type:'line',
+    data:{labels,datasets:[{
+      label:'Capital',data:caps,borderColor:C.accent,borderWidth:2,
+      pointBackgroundColor:ptColors,pointRadius:4,pointHoverRadius:6,
+      fill:true,backgroundColor:'rgba(0,119,204,0.06)',tension:0.1
+    }]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`Capital: ${fmtR(caps[ctx.dataIndex])} | Trade: ${fmtR(A.results[ctx.dataIndex])}`}}},
+      scales:{x:{ticks:{maxTicksLimit:14}},y:{ticks:{callback:v=>'R$'+v}}}}
+  });
+}
+
+// ── HORÁRIOS ──
+function renderHorarios(){
+  const d=A;
+  document.getElementById('janFirst').textContent=fmtTime(d.winMinH,d.winMinM);
+  document.getElementById('janLast').textContent=fmtTime(d.winMaxH,d.winMaxM);
+  document.getElementById('janAlert').innerHTML=alertBox('a','ℹ️',`Janela operacional real: <strong>${fmtTime(d.winMinH,d.winMinM)} → ${fmtTime(d.winMaxH,d.winMaxM)}</strong>. Todos os testes respeitam essa faixa.`);
+
+  const tfLabel=d.detectedTF<=1?'1 minuto':d.detectedTF<=3?'3 minutos':d.detectedTF<=5?'5 minutos':d.detectedTF<=15?'15 minutos':'30 minutos';
+  document.getElementById('janAlert').innerHTML+=alertBox('a','🔍',`<strong>Timeframe detectado: ${tfLabel}</strong> — duração mediana: ${d.durationMed} min. `+
+    `Cortes de <strong>${d.cutStep} em ${d.cutStep} min</strong>. Pausas em blocos de <strong>${d.pauseStep} min</strong>.`);
+
+  // Hour bars
+  const hours=Object.keys(d.byHour).sort((a,b)=>+a-+b);
+  const maxP=Math.max(...hours.map(h=>Math.abs(d.byHour[h].profit)));
+  document.getElementById('hourBars').innerHTML=hours.map(h=>{
+    const hd=d.byHour[h];
+    const pct2=(Math.abs(hd.profit)/maxP*100).toFixed(1);
+    const col=hd.profit>=0?C.green:C.red;
+    const wr2=(hd.wins/hd.n*100).toFixed(0);
+    return`<div class="bar-row">
+      <div class="bar-lbl" style="color:var(--text)">${h}h</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${pct2}%;background:${col}"></div></div>
+      <div class="bar-val">${fmtR(hd.profit)}</div>
+      <div style="width:38px;text-align:right;font-size:11px;color:var(--muted2)">${wr2}%</div>
+    </div>`;
+  }).join('');
+
+  // Hour rank table
+  const sortedHours=[...hours].sort((a,b)=>d.byHour[b].profit-d.byHour[a].profit);
+  document.getElementById('hourRankTable').innerHTML=
+    hrow(['Hora','Trades','Lucro','Acerto','Status'])+
+    sortedHours.map((h,i)=>{
+      const hd=d.byHour[h];const wr2=hd.wins/hd.n;
+      let st;
+      if(i===0)st=badge('Melhor','g');
+      else if(hd.profit<0)st=badge('Evitar','r');
+      else if(wr2>=0.9)st=badge('Excelente','g');
+      else if(wr2>=0.75)st=badge('Bom','a');
+      else st=badge('Neutro','y');
+      return trow([`${h}h`,hd.n,{v:fmtR(hd.profit),cls:hd.profit>=0?'pos':'neg'},{v:pct(wr2),cls:wr2>=0.8?'pos':wr2>=0.6?'neu':'neg'},st]);
+    }).join('');
+
+  // Cutoff table
+  const best=d.bestCut;
+  document.getElementById('cutoffTable').innerHTML=
+    `<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Granularidade: ${d.cutStep} min · Timeframe detectado: ${tfLabel}</div>`+
+    hrow(['Corte','Trades','Lucro','DD','Acerto'])+
+    d.cutoffSims.map(s=>trow([
+      s.label===best?.label?`<strong>${s.label}</strong>`:s.label,
+      s.n,
+      {v:fmtR(s.profit),cls:'pos'},
+      {v:fmtR(s.dd),cls:s.dd===0?'pos':s.dd<d.maxDD?'neu':'neg'},
+      {v:pct(s.wr),cls:s.wr>=0.9?'pos':s.wr>=0.75?'neu':'neg'},
+    ])).join('');
+  document.getElementById('cutoffAlert').innerHTML=best?
+    alertBox('g','🎯',`<strong>Melhor corte: ${best.label}</strong> — ${best.n} trades, ${fmtR(best.profit)} de lucro, DD ${fmtR(best.dd)}, acerto ${pct(best.wr)}. `+
+      `(Testado de ${d.cutStep} em ${d.cutStep} min — timeframe detectado: ${tfLabel})`):'';
+
+  // Pause table
+  const sortedPauses=[...d.pauseSims].sort((a,b)=>b.profit-a.profit);
+  const bestP=sortedPauses[0];
+  document.getElementById('pauseTable').innerHTML=
+    `<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Blocos de pausa: ${d.pauseStep} min · Timeframe detectado: ${tfLabel}</div>`+
+    hrow(['Pausa','Trades restantes','Lucro resultante','DD','Resultado removido'])+
+    sortedPauses.slice(0,8).map(s=>trow([
+      s.label,s.n,
+      {v:fmtR(s.profit),cls:s.profit>=d.totalProfit?'pos':'neu'},
+      {v:fmtR(s.dd),cls:s.dd<d.maxDD?'pos':'neg'},
+      {v:`${fmtR(s.lostProfit)} (${s.removed}t)`,cls:s.lostProfit>=0?'pos':'neg'},
+    ])).join('');
+  document.getElementById('pauseAlert').innerHTML=bestP?
+    alertBox(bestP.profit>=d.totalProfit?'g':'y','💡',
+      bestP.profit>d.totalProfit?
+        `<strong>Pausa recomendada: ${bestP.label}</strong> — aumenta o lucro para ${fmtR(bestP.profit)} eliminando ${bestP.removed} trades negativos (${fmtR(bestP.lostProfit)}).`:
+        `<strong>Melhor pausa disponível: ${bestP.label}</strong> — todos os blocos contêm trades positivos. Não há pausa que melhore significativamente o resultado.`):'';
+}
+
+  // ── Fases detectadas ──
+  const fasesEl=document.getElementById('fasesBlock');
+  if(!d.phases||d.phases.length===0){
+    fasesEl.innerHTML=alertBox('a','ℹ️','Nenhuma mudança de fase detectada — setup operou de forma uniforme no período.');
+  } else {
+    const phColors=['#0077cc','#0a7c4f','#5b3fcf'];
+    fasesEl.innerHTML=d.phases.map((ph,pidx)=>{
+      const col=phColors[pidx]||'#888';
+      const wrCls=ph.wr>=0.9?'pos':ph.wr>=0.7?'neu':'neg';
+      const pfLbl=ph.pf===Infinity?'∞':fmt(ph.pf,2);
+      const payoffLbl=ph.avgLoss>0?fmt(ph.avgGain/ph.avgLoss,2):'∞';
+      return `<div style="border-left:3px solid ${col};padding:10px 14px;margin-bottom:12px;background:rgba(0,0,0,.025);border-radius:0 6px 6px 0">
+        <div style="font-weight:700;font-size:13px;color:var(--text);margin-bottom:8px">${ph.label}
+          <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:6px">${ph.desc}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px 8px;font-size:12px">
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Trades</div><strong>${ph.n}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Lucro</div><strong style="color:${ph.profit>=0?'var(--green)':'var(--red)'}">${fmtR(ph.profit)}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Acerto</div><strong style="color:${ph.wr>=0.9?'var(--green)':ph.wr>=0.7?'var(--yellow)':'var(--red)'}">${pct(ph.wr)}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">PF</div><strong style="color:${ph.pf>=2?'var(--green)':ph.pf>=1.3?'var(--yellow)':'var(--red)'}">${pfLbl}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Losses</div><strong style="color:${ph.losses===0?'var(--green)':'var(--red)'}">${ph.losses}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Gain médio</div><strong style="color:var(--green)">${fmtR(ph.avgGain,2)}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Loss médio</div><strong style="color:${ph.avgLoss>0?'var(--red)':'var(--green)'}">${ph.avgLoss>0?fmtR(ph.avgLoss,2):'—'}</strong></div>
+          <div><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Payoff</div><strong>${payoffLbl}</strong></div>
+        </div>
+      </div>`;
+    }).join('');
+    const ph1=d.phases[0],ph2=d.phases.length>1?d.phases[1]:null;
+    if(ph1.losses===0&&ph2&&ph2.losses>0){
+      fasesEl.innerHTML+=alertBox('y','⚠️',`<strong>Transição de fase detectada:</strong> A Fase 1 operou ${ph1.n} trades com <strong>zero losses</strong>. Na Fase 2 surgiram ${ph2.losses} losses. Investigar se houve mudança de parâmetros (gain/loss/contratos) ou mudança de regime de mercado.`);
+    }
+  }
+
+  // ── Cluster de losses por horário ──
+  const clTableEl=document.getElementById('lossClusterTable');
+  const clAlertEl=document.getElementById('lossClusterAlert');
+  if(!d.lossCluster||d.lossCluster.length===0){
+    if(clTableEl)clTableEl.innerHTML='';
+    if(clAlertEl)clAlertEl.innerHTML=alertBox('g','✅','Nenhum loss registrado — sem cluster de perdas a reportar.');
+  } else {
+    const totalLosses=d.losses.length;
+    if(clTableEl)clTableEl.innerHTML=
+      hrow(['Hora (entrada)','Losses','% dos losses','Prejuízo','Lucro hora','Status'])+
+      d.lossCluster.map(cl=>{
+        const hd=d.byHour[cl.hour]||{profit:0};
+        const isMajor=cl.pctOfLosses>=0.35;
+        return trow([
+          `${cl.hour}h`,
+          {v:String(cl.losses),cls:'neg'},
+          {v:pct(cl.pctOfLosses),cls:isMajor?'neg':'neu'},
+          {v:fmtR(cl.lossVal),cls:'neg'},
+          {v:fmtR(hd.profit),cls:hd.profit>=0?'pos':'neg'},
+          isMajor?badge('Candidato a bloqueio','r'):badge('Monitorar','y'),
+        ]);
+      }).join('');
+    if(clAlertEl)clAlertEl.innerHTML=alertBox('r','💀',
+      `<strong>Horário ${d.lossCluster[0].hour}h</strong> concentra <strong>${pct(d.lossCluster[0].pctOfLosses)}</strong> dos losses `+
+      `(${d.lossCluster[0].losses} de ${totalLosses}) — prejuízo total de ${fmtR(d.lossCluster[0].lossVal)}. `+
+      `Candidato prioritário a bloqueio ou pausa intraday.`);
+  }
+
+// ── SEMANA ──
+function renderSemana(){
+  const d=A;
+  const wds=Object.keys(d.byWD).filter(w=>w>=1&&w<=5).sort((a,b)=>+a-+b);
+  const wdNames=d.wdNames;
+  document.getElementById('wdKpis').innerHTML=wds.map(w=>{
+    const wd=d.byWD[w];const wr2=wd.wins/wd.n;
+    const bdr=wd.profit>=0?'gt':'rt';
+    return kpiCard(wdNames[w],fmtR(wd.profit),`${wd.n} trades · ${pct(wr2)} acerto`,wd.profit>=0?'g':'r',bdr);
+  }).join('');
+
+  const base={n:d.n,profit:d.totalProfit};
+  document.getElementById('wdRemoveTable').innerHTML=
+    hrow(['Cenário','Trades','Lucro','Variação','Recomendação'])+
+    [trow(['Todos (base)',d.n,{v:fmtR(d.totalProfit),cls:'pos'},'—',badge('Referência','a')])]+
+    wds.sort((a,b)=>d.byWD[b].profit-d.byWD[a].profit).map(w=>{
+      const wd=d.byWD[w];
+      const rn=d.n-wd.n;const rp=d.totalProfit-wd.profit;
+      const diff=rp-d.totalProfit;
+      let rec;
+      if(diff>0)rec=badge('Considerar','y');
+      else if(diff<-d.totalProfit*0.2)rec=badge('Não recomendado','r');
+      else rec=badge('Neutro','y');
+      return trow([`Sem ${wdNames[w]}`,rn,{v:fmtR(rp),cls:'pos'},{v:`${diff>=0?'+':''}${fmtR(diff)}`,cls:diff>=0?'pos':'neg'},rec]);
+    }).join('');
+
+  document.getElementById('wdLossTable').innerHTML=
+    hrow(['Dia','Losses','% dos losses','Valor'])+
+    wds.sort((a,b)=>d.byWD[b].losses-d.byWD[a].losses).map(w=>{
+      const wd=d.byWD[w];
+      const lossPct=d.losses.length>0?wd.losses/d.losses.length:0;
+      return trow([wdNames[w],wd.losses,{v:pct(lossPct),cls:wd.losses>0?'neg':'pos'},{v:fmtR(wd.lossVal),cls:wd.losses>0?'neg':'pos'}]);
+    }).join('');
+
+  // Find worst day for losses
+  const worstWD=wds.sort((a,b)=>d.byWD[b].losses-d.byWD[a].losses)[0];
+  const wwd=d.byWD[worstWD];
+  document.getElementById('wdAlert').innerHTML=wwd&&wwd.losses>0?
+    alertBox(wwd.losses/d.losses.length>0.4?'r':'y','⚠️',
+      `<strong>${d.wdNames[worstWD]} concentra ${pct(wwd.losses/d.losses.length)} dos losses</strong> (${wwd.losses} de ${d.losses.length}). `+
+      (wwd.profit<50?'O ganho marginal não compensa os losses nesse dia — avaliar bloqueio.':'O ganho marginal ainda justifica operar nesse dia.')):
+    alertBox('g','✅','Losses distribuídos de forma equilibrada pelos dias da semana. Não há sazonalidade negativa relevante.');
+}
+
+// ── SEQUÊNCIAS ──
+function renderSequencias(){
+  const d=A;
+  document.getElementById('seqKpis').innerHTML=[
+    kpiCard('Maior Seq. de Wins',`${d.maxWinSeq} trades`,`Sequências positivas: ${d.winSeqs.length}`,'g','gt'),
+    kpiCard('Maior Seq. de Losses',`${d.maxLossSeq} trades`,`Sequências negativas: ${d.lossSeqs.length}`,'r','rt'),
+    kpiCard('P(gain | gain anterior)',pct(d.pGivenG),`Base: ${pct(d.wr)}`,Math.abs(d.pGivenG-d.wr)<0.1?'g':'y','at'),
+    kpiCard('P(gain | loss anterior)',pct(d.pGivenL),`Base: ${pct(d.wr)}`,Math.abs(d.pGivenL-d.wr)<0.1?'g':'y',''),
+  ].join('');
+
+  document.getElementById('lossSeqTable').innerHTML=
+    hrow(['Sequência de losses','Frequência'])+
+    [...new Set(d.lossSeqs)].sort((a,b)=>b-a).map(s=>{
+      const freq=d.lossSeqs.filter(x=>x===s).length;
+      return trow([`${s} loss${s>1?'es':''} seguidos`,{v:`${freq}x`,cls:s>=3?'neg':s>=2?'neu':'pos'}]);
+    }).join('')+
+    (d.lossSeqs.length===0?trow(['Nenhuma sequência de 2+ losses',{v:'—',cls:'pos'}]):'');
+
+  document.getElementById('autoCorTable').innerHTML=
+    hrow(['Situação anterior','P(próximo = gain)','Desvio da base','Sinal'])+
+    trow(['Gain anterior',{v:pct(d.pGivenG),cls:d.pGivenG>=d.wr?'pos':'neg'},{v:`${(d.pGivenG-d.wr>=0?'+':'')}${pct(d.pGivenG-d.wr)}`,cls:Math.abs(d.pGivenG-d.wr)<0.1?'pos':'neu'},
+      badge(Math.abs(d.pGivenG-d.wr)<0.1?'Neutro':'Dependência positiva',Math.abs(d.pGivenG-d.wr)<0.1?'g':'y')])+
+    trow(['Loss anterior',{v:pct(d.pGivenL),cls:d.pGivenL>=d.wr?'pos':'neg'},{v:`${(d.pGivenL-d.wr>=0?'+':'')}${pct(d.pGivenL-d.wr)}`,cls:Math.abs(d.pGivenL-d.wr)<0.1?'pos':'neu'},
+      badge(Math.abs(d.pGivenL-d.wr)<0.1?'Neutro':'Dependência negativa',Math.abs(d.pGivenL-d.wr)<0.1?'g':'y')]);
+
+  const autoOk=Math.abs(d.pGivenG-d.wr)<0.1&&Math.abs(d.pGivenL-d.wr)<0.1;
+  document.getElementById('autoCorAlert').innerHTML=
+    alertBox(autoOk?'g':'y',autoOk?'✅':'💡',
+      autoOk?'Autocorrelação praticamente nula. Trades estatisticamente independentes — ideal para gestão de risco convencional.':
+        `Existe dependência serial leve. ${d.pGivenL<d.wr?'Considerar reduzir tamanho após um loss.':'Momentum detectado: setup tende a continuar ganhando após wins.'}`);
+}
+
+// ── QUALIDADE ──
+function renderQualidade(){
+  const d=A;
+  const [pfCls,pfLbl]=pfStatus(d.pf);
+  const [rfCls,rfLbl]=rfStatus(d.rf);
+  const [shCls,shLbl]=sharpeStatus(d.sharpe);
+  document.getElementById('metricsTable').innerHTML=
+    hrow(['Métrica','Valor','Ref. Fraco','Ref. Bom','Ref. Excelente','Status'])+
+    [['Profit Factor',fmt(d.pf,3),'< 1.3','1.3–2.0','> 2.0',badge(pfLbl,pfCls)],
+     ['Taxa de Acerto',pct(d.wr),'< 50%','50–70%','> 70%',badge(d.wr>=0.7?'EXCELENTE':'BOM',d.wr>=0.7?'g':'y')],
+     ['Expectativa Matemática',fmtR(d.em,2),'< 0','>0','> R$20',badge(d.em>20?'EXCELENTE':d.em>0?'POSITIVO':'NEGATIVO',d.em>0?'g':'r')],
+     ['Payoff Médio Real',fmt(d.payoff,3),'< 0.5','0.5–1.0','> 1.0',badge(d.payoff>=1?'BOM':'ATENÇÃO',d.payoff>=1?'g':'y')],
+     ['Recovery Factor',fmt(d.rf,2),'< 2.0','2.0–5.0','> 5.0',badge(rfLbl,rfCls)],
+     ['Sharpe Adaptado (diário)',fmt(d.sharpe,3),'< 1.0','1.0–2.0','> 2.0',badge(shLbl,shCls)],
+     ['Drawdown Máximo',fmtR(d.maxDD),'—','—','—',badge('REGISTRADO','y')],
+     ['Breakeven mínimo',pct(d.breakEvenWR),'—','—',`Acerto atual: ${pct(d.wr)}`,badge(d.wr>d.breakEvenWR+0.1?'MARGEM AMPLA':'MARGEM APERTADA',d.wr>d.breakEvenWR+0.1?'g':'y')],
+    ].map(r=>trow(r)).join('');
+
+  document.getElementById('payoffInterpret').innerHTML=
+    '<h3>Interpretação do Payoff</h3>'+
+    (d.payoff<1?
+      alertBox('y','⚠️',`<strong>Payoff ${fmt(d.payoff,3)}</strong> — O gain médio (${fmtR(d.avgGain,2)}) é menor que o loss médio (${fmtR(d.avgLoss,2)}). `+
+        `Para esta estratégia isso é <em>estruturalmente aceito</em> quando a taxa de acerto é alta o suficiente. `+
+        `A expectativa matemática confirma: ${fmtR(d.em,2)} por trade.`):
+      alertBox('g','✅',`<strong>Payoff ${fmt(d.payoff,3)}</strong> — Excelente relação gain/loss. Cada win compensa mais de um loss.`));
+
+  document.getElementById('sharpeInterpret').innerHTML=
+    '<h3>Interpretação do Sharpe</h3>'+
+    alertBox(d.sharpe>=1?'g':'y',d.sharpe>=1?'✅':'⚠️',
+      `<strong>Sharpe ${fmt(d.sharpe,3)}</strong> — ${d.sharpe<1?
+        `Abaixo do referencial de 1.0. Com apenas um trade por dia, a variabilidade diária é naturalmente elevada. Isso não indica fraqueza estrutural do setup.`:
+        `Acima do referencial de 1.0. Bom equilíbrio entre retorno e volatilidade diária.`}`);
+}
+
+// ── TEMPORAL ──
+function renderTemporal(){
+  const d=A;
+  document.getElementById('monthKpis').innerHTML=d.monthKeys.slice(-4).map(k=>{
+    const m=d.byMonth[k];const wr2=m.wins/m.n;
+    const bdr=m.profit>=0?'gt':'rt';
+    return kpiCard(k,fmtR(m.profit),`${m.n} trades · ${pct(wr2)} acerto`,m.profit>=0?'g':'r',bdr);
+  }).join('');
+
+  // Rolling-10 e rolling-20 status
+  const r10ok=d.rolling10===null||d.rolling10>=d.pf*0.8;
+  const r20ok=d.rolling20===null||d.rolling20>=d.pf*0.8;
+  const r10lbl=d.rolling10===null?'Poucos trades':(d.rolling10===Infinity?'∞':fmt(d.rolling10,2));
+  const r20lbl=d.rolling20===null?'Poucos trades':(d.rolling20===Infinity?'∞':fmt(d.rolling20,2));
+
+  document.getElementById('tempSummary').innerHTML=
+    hrow(['Indicador','Valor'])+
+    row('Meses positivos',`<span class="pos">${d.posMonths}/${d.monthKeys.length} (${pct(d.posMonths/d.monthKeys.length)})</span>`)+
+    row('Melhor mês',`<span class="pos">${d.monthKeys[d.monthProfits.indexOf(Math.max(...d.monthProfits))]} (${fmtR(Math.max(...d.monthProfits))})</span>`)+
+    row('Pior mês',`<span class="${Math.min(...d.monthProfits)<0?'neg':'pos'}">${d.monthKeys[d.monthProfits.indexOf(Math.min(...d.monthProfits))]} (${fmtR(Math.min(...d.monthProfits))})</span>`)+
+    row('PF histórico global',`<span class="${d.pf>=2?'pos':'neu'}">${fmt(d.pf,3)}</span>`)+
+    row('<strong>PF Rolling-10</strong> (últimas 10 ops)',`<span class="${r10ok?'pos':'neg'}">${r10lbl}${!r10ok?' ⚠️':''}</span>`)+
+    row('<strong>PF Rolling-20</strong> (últimas 20 ops)',`<span class="${r20ok?'pos':'neg'}">${r20lbl}${!r20ok?' 🚨':''}</span>`)+
+    row('Alerta dispara quando',`PF rolling &lt; ${fmt(d.pf*0.8,2)} (80% do histórico)`);
+
+  const degrading20=d.rolling20!==null&&d.rolling20<d.pf*0.8;
+  const degrading10=d.rolling10!==null&&d.rolling10<d.pf*0.8;
+  document.getElementById('tempAlert').innerHTML=
+    degrading20?alertBox('r','🚨',`<strong>Alerta ativo — Rolling-20:</strong> PF das últimas 20 operações (${r20lbl}) está ${pct(1-d.rolling20/d.pf)} abaixo do PF histórico. Threshold de alerta: ${fmt(d.pf*0.8,2)}.`+(degrading10?` Rolling-10 também em alerta (${r10lbl}).`:'')):
+    degrading10?alertBox('y','⚠️',`<strong>Atenção — Rolling-10:</strong> PF das últimas 10 operações (${r10lbl}) abaixo de 80% do histórico. Rolling-20 ainda OK (${r20lbl}). Monitorar.`):
+    alertBox('g','✅',`Setup estável. PF Rolling-20: ${r20lbl} · PF Rolling-10: ${r10lbl} · Ambos acima de 80% do histórico.`);
+
+  document.getElementById('rollingTable').innerHTML=
+    hrow(['Janela','Trades','PF','Limiar alerta','Status'])+
+    trow(['Rolling-10 (últimas 10 ops)',Math.min(10,d.n),
+      {v:r10lbl,cls:r10ok?'pos':'neg'},
+      {v:fmt(d.pf*0.8,2),cls:''},
+      r10ok?badge('ESTÁVEL','g'):badge('ALERTA','r')])+
+    trow(['Rolling-20 (últimas 20 ops)',Math.min(20,d.n),
+      {v:r20lbl,cls:r20ok?'pos':'neg'},
+      {v:fmt(d.pf*0.8,2),cls:''},
+      r20ok?badge('ESTÁVEL','g'):badge('ALERTA','r')])+
+    '<tr><td colspan="5" style="padding-top:12px;font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Rolling Mensal</td></tr>'+
+    d.rolling.map(r=>{
+      const pct2=r.pf/d.pf;
+      const st=pct2>=0.8?badge('ESTÁVEL','g'):pct2>=0.5?badge('ATENÇÃO','y'):badge('QUEDA','r');
+      return trow([r.label,r.n,{v:r.pf===Infinity?'∞':fmt(r.pf,3),cls:r.pf>=2?'pos':r.pf>=1.3?'neu':'neg'},{v:fmt(d.pf*0.8,2)},st]);
+    }).join('')+
+    (d.rolling.length===0?trow(['Histórico muito curto','—','—','—','—']):'');
+
+  document.getElementById('rollingAlert').innerHTML=
+    alertBox('a','💡','<strong>Como ler:</strong> Rolling-20 é o indicador principal de degradação — mais estável que Rolling-10. Rolling-10 serve como alerta precoce. Se Rolling-20 cair abaixo do limiar, considere pausar o robô para revisão.');
+}
+
+function renderMonthChart(){
+  if(charts.month)return;
+  const ctx=document.getElementById('monthChart').getContext('2d');
+  const colors=A.monthProfits.map(p=>p>=0?C.green:C.red);
+  charts.month=new Chart(ctx,{
+    type:'bar',
+    data:{labels:A.monthKeys,datasets:[{label:'Lucro (R$)',data:A.monthProfits,backgroundColor:colors,borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false}},
+      scales:{y:{ticks:{callback:v=>'R$'+v}}}}
+  });
+}
+
+// ── MONTE CARLO ──
+function renderMonteCarlo(){
+  const d=A;
+  document.getElementById('mcKpis').innerHTML=[
+    kpiCard('DD Médio (1.000 sim.)',fmtR(d.mcDDMean),'Cenário mediano','y',''),
+    kpiCard('DD Pior Caso (p95)',fmtR(d.mcDDP95),'Cenário adverso','r','rt'),
+    kpiCard('Prob. DD > R$200',pct(d.mcProbDD200),'',d.mcProbDD200<0.1?'g':'r',d.mcProbDD200<0.1?'gt':'rt'),
+    kpiCard('Prob. DD > R$500',pct(d.mcProbDD500),'',d.mcProbDD500<0.05?'g':'r',d.mcProbDD500<0.05?'gt':'rt'),
+  ].join('');
+
+  document.getElementById('mcPercTable').innerHTML=
+    hrow(['Percentil','Lucro Final','Interpretação'])+
+    [['P5 (pior 5%)',d.mcPerc.p5,'Cenário muito adverso'],
+     ['P25',d.mcPerc.p25,'Cenário abaixo da média'],
+     ['P50 (mediana)',d.mcPerc.p50,'Cenário esperado'],
+     ['P75',d.mcPerc.p75,'Cenário favorável'],
+     ['P95',d.mcPerc.p95,'Cenário muito favorável'],
+    ].map(([label,val,desc])=>trow([label,{v:fmtR(val),cls:val>=0?'pos':'neg'},desc])).join('');
+
+  document.getElementById('mcAlert1').innerHTML=
+    d.mcPerc.p5<0?
+      alertBox('r','🚨','<strong>Alerta:</strong> O percentil 5% do lucro final é negativo. O setup possui risco real de resultado negativo em cenários adversos de sequenciamento.'):
+      alertBox('g','✅','<strong>P5 positivo:</strong> Mesmo no pior 5% das simulações, o resultado é positivo. Risco de ruína praticamente nulo.');
+
+  document.getElementById('mcRiskBlock').innerHTML=
+    alertBox(d.mcDDP95<d.grossLoss*3?'g':'y','📊',
+      `DD esperado em condições normais: <strong>${fmtR(d.mcDDMean)}</strong><br>`+
+      `DD no pior cenário (p95): <strong>${fmtR(d.mcDDP95)}</strong><br>`+
+      `Representa ${pct(d.mcDDP95/(d.totalProfit+d.mcDDP95))} do pico projetado.`)+
+    alertBox('a','💡',
+      `O Monte Carlo embaralha a sequência dos ${d.n} trades 1.000 vezes, revelando o que pode acontecer com ordens diferentes. `+
+      `O lucro total converge sempre para <strong>${fmtR(d.totalProfit)}</strong> (soma fixa) — o que varia é o caminho percorrido.`);
+}
+
+// ── OUTLIERS ──
+function renderOutliers(){
+  const d=A;
+  const thresh2sigUp=d.meanR+2*d.stdR;
+  const thresh2sigDown=d.meanR-2*d.stdR;
+  document.getElementById('outlierTable').innerHTML=
+    hrow(['Tipo','Qtd','Threshold','Total R$','% Gross'])+
+    trow(['Ganhos atípicos (>2σ)',{v:d.outGains.length,cls:d.outGains.length===0?'pos':'neu'},{v:fmtR(thresh2sigUp,2)},
+      {v:fmtR(sum(d.outGains)),cls:'pos'},{v:pct(d.grossProfit>0?sum(d.outGains)/d.grossProfit:0)}])+
+    trow(['Perdas atípicas (<-2σ)',{v:d.outLosses.length,cls:d.outLosses.length>0?'neg':'pos'},{v:fmtR(thresh2sigDown,2)},
+      {v:fmtR(sum(d.outLosses)),cls:'neg'},{v:pct(d.grossLoss>0?Math.abs(sum(d.outLosses))/d.grossLoss:0)}]);
+
+  document.getElementById('outlierAlert').innerHTML=
+    d.outGains.length===0?
+      alertBox('g','✅','<strong>Setup NÃO depende de outliers positivos.</strong> O resultado é construído por acumulação consistente, não por poucos trades excepcionais.'):
+      alertBox('y','⚠️',`${d.outGains.length} ganho(s) atípico(s) representam ${pct(sum(d.outGains)/d.grossProfit)} do gross profit. Verificar se o setup é robusto sem eles.`);
+
+  document.getElementById('top5Table').innerHTML=
+    hrow(['Cenário','Lucro restante','Status'])+
+    d.removeScenarios.map(s=>trow([
+      `Remover top ${s.k} gain${s.k>1?'s':''}`,
+      {v:fmtR(s.profit),cls:s.profit>=0?'pos':'neg'},
+      badge(s.profit>=0?'POSITIVO':'NEGATIVO',s.profit>=0?'g':'r'),
+    ])).join('');
+
+  document.getElementById('top5Alert').innerHTML=
+    d.removeScenarios[1]&&d.removeScenarios[1].profit>=0?
+      alertBox('g','✅',`Removendo os 3 maiores gains o setup ainda retorna <strong>${fmtR(d.removeScenarios[1].profit)}</strong>. Sem dependência de outliers.`):
+      alertBox('r','🚨','<strong>Atenção:</strong> Removendo os top gains o resultado fica negativo. O setup depende criticamente de poucos trades atípicos.');
+
+  document.getElementById('distAlert').innerHTML=
+    alertBox('a','📊','<strong>'+distType(d)+'</strong>');
+}
+
+function renderHistChart(){
+  if(charts.hist)return;
+  const ctx=document.getElementById('histChart').getContext('2d');
+  const results=A.results;
+  const mn=Math.floor(Math.min(...results)/10)*10;
+  const mx=Math.ceil(Math.max(...results)/10)*10;
+  const step=Math.max(5,Math.round((mx-mn)/10/5)*5);
+  const buckets={};
+  for(let b=mn;b<mx;b+=step)buckets[b]=0;
+  for(const r of results){
+    const b=Math.floor(r/step)*step;
+    if(buckets[b]!==undefined)buckets[b]++;else buckets[b]=1;
+  }
+  const labels=Object.keys(buckets).map(b=>`${b}`);
+  const vals=Object.values(buckets);
+  const bkColors=labels.map(b=>+b>=0?C.green:C.red);
+  charts.hist=new Chart(ctx,{
+    type:'bar',
+    data:{labels,datasets:[{data:vals,backgroundColor:bkColors,borderRadius:3}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{title:{display:true,text:'Resultado (R$)'}},y:{ticks:{stepSize:1}}}}
+  });
+}
+
+// ── CUSTOS ──
+function renderCustos(){
+  const d=A;
+  document.getElementById('custoKpis').innerHTML=[
+    kpiCard('Resultado Bruto',fmtR(d.totalProfitGross),`${d.n} trades`,'g','gt'),
+    kpiCard('Custos Operacionais',fmtR(d.totalCostAll),`${fmtR(d.costPerTradeFmt,2)}/trade · R$0,35/contrato/lado`,'r','rt'),
+    kpiCard('Resultado Líquido',fmtR(d.totalProfit),'Após custos reais',d.totalProfit>=0?'g':'r',d.totalProfit>=0?'gt':'rt'),
+    kpiCard('Custos / Bruto',pct(d.totalCostAll/Math.max(1,Math.abs(d.totalProfitGross))),d.totalCostAll/Math.max(1,Math.abs(d.totalProfitGross))<0.3?'Saudável':'Atenção',d.totalCostAll/Math.max(1,Math.abs(d.totalProfitGross))<0.3?'g':'r',''),
+  ].join('');
+
+  const ctQty=d.avgQty||1;
+  document.getElementById('custoTable').innerHTML=
+    hrow(['Item','Por contrato/lado','Por trade ('+fmt(ctQty,0)+' contratos)','Observação'])+
+    trow(['Emolumentos B3 (negociação+liquidação)',`R$0,09`,{v:`R${fmtR(0.09*ctQty*2)}`,cls:'neg'},'Taxa oficial B3 (liquidação R$0,30 + negociação reduzida)'])+
+    trow(['Corretagem (XP)','—',{v:'~R$0,24',cls:'neg'},'Flat ~R$1,22/dia ÷ trades do dia (amortizado)'])+
+    trow(['Margem de segurança / slippage','R$0,26',{v:`R${fmtR(0.26*ctQty*2)}`,cls:'neg'},'Buffer conservador'])+
+    trow([`<strong>Total fixo aplicado</strong>`,'<strong>R$0,35</strong>',{v:`<strong>${fmtR(d.costPerTradeFmt,2)}</strong>`,cls:'neg'},'<strong>R$0,35/contrato/lado — todos os trades</strong>'])+
+    trow(['Total custos histórico','—',{v:fmtR(d.totalCostAll),cls:'neg'},`${d.n} trades × ${fmtR(d.costPerTradeFmt,2)}`]);
+
+  // Sensibilidade: variar custo por contrato em torno de R$0,35
+  const costVariants=[0.20,0.25,0.30,0.35,0.40,0.45,0.50];
+  const ctQ=d.avgQty||1;
+  document.getElementById('slipTable').innerHTML=
+    hrow(['Custo/contrato/lado','Custo/trade','Total','Resultado líquido','vs cenário atual'])+
+    costVariants.map(cv=>{
+      const cpTrade=cv*ctQ*2;
+      const totCost=cpTrade*d.n;
+      const netV=d.totalProfitGross-totCost;
+      const diff=netV-d.totalProfit;
+      const isBase=Math.abs(cv-0.35)<0.001;
+      return `<tr style="${isBase?'background:rgba(0,119,204,.07);font-weight:600':''}">
+        <td>R$${cv.toFixed(2)}${isBase?' ← atual':''}</td>
+        <td class="neg">${fmtR(cpTrade,2)}</td>
+        <td class="neg">${fmtR(totCost)}</td>
+        <td class="${netV>=0?'pos':'neg'}">${fmtR(netV)}</td>
+        <td class="${diff>=0?'pos':'neg'}">${isBase?'—':(diff>0?'+':'')+fmtR(diff)}</td>
+      </tr>`;
+    }).join('');
+
+  const custoPct=d.totalCostAll/Math.max(1,Math.abs(d.totalProfitGross))*100;
+  document.getElementById('slipAlert').innerHTML=
+    alertBox(d.totalProfit>=0?'g':'r',d.totalProfit>=0?'✅':'🚨',
+      `Com R$0,35/contrato/lado, o custo total é <strong>${fmtR(d.totalCostAll)}</strong> (${custoPct.toFixed(1)}% do bruto). `+
+      `Resultado líquido: <strong>${fmtR(d.totalProfit)}</strong>. `+
+      (custoPct>100?'<strong>Os custos superam o resultado bruto — setup inviável operacionalmente.</strong>':
+       custoPct>30?'Custos consomem mais de 30% do bruto — pressão operacional elevada.':
+       'Margem operacional saudável.'));
+}
+
+// ── RELATÓRIO FINAL ──
+function renderRelatorio(){
+  const d=A;
+  const stars='⭐'.repeat(Math.round(d.score/2));
+  document.getElementById('finalScore').textContent=d.score.toFixed(1);
+  document.getElementById('finalStars').textContent=stars;
+
+  const exec=`O setup <strong style="color:var(--accent)">${d.filename}</strong> é classificado como <strong style="color:var(--text)">${d.classif}</strong>. `+
+    `Com ${d.n} trades no período ${d.startDate}→${d.endDate}, resultado bruto ${fmtR(d.totalProfitGross)}, custos ${fmtR(d.totalCostAll)} (R$0,35/contrato/lado), `+
+    `<strong>resultado líquido ${fmtR(d.totalProfit)}</strong>. `+
+    `taxa de acerto de ${pct(d.wr)}, Profit Factor de ${fmt(d.pf,2)} e Recovery Factor de ${fmt(d.rf,2)}. `+
+    (d.pf>=3&&d.wr>=0.75?'Indicadores de qualidade acima da média — setup robusto para operação continuada.':
+     d.pf>=1.5?'Indicadores razoáveis — monitorar consistência temporal.':'Indicadores fracos — revisar parâmetros.');
+  document.getElementById('finalExec').innerHTML=exec;
+
+  // Blocs
+  document.getElementById('rep1').innerHTML=
+    hrow(['Parâmetro','Valor'])+
+    row('Tipo detectado',badge(d.classif,'p'))+
+    row('Contratos observados','1 (padrão)')+
+    row('Gain médio',`<span class="pos">${fmtR(d.avgGain,2)}</span>`)+
+    row('Loss médio',`<span class="neg">${fmtR(d.avgLoss,2)}</span>`)+
+    row('Distribuição',distType(d).split('—')[0]);
+
+  document.getElementById('rep2').innerHTML=
+    hrow(['Métrica','Valor'])+
+    row('Lucro bruto',`<span class="pos">${fmtR(d.totalProfit)}</span>`)+
+    row('Custos operacionais',`<span class="neg">-${fmtR(d.totalCostAll)}</span>`)+
+    row('Resultado líquido',`<span class="${d.totalProfit>=0?'pos':'neg'}">${fmtR(d.totalProfit)}</span>`)+
+    row('Drawdown máximo',`<span class="neg">${fmtR(d.maxDD)}</span>`)+
+    row('Taxa de acerto',`<span class="pos">${pct(d.wr)}</span>`)+
+    row('Profit Factor',`<span class="${d.pf>=2?'pos':'neu'}">${fmt(d.pf,3)}</span>`)+
+    row('Expectativa matemática',`<span class="${d.em>0?'pos':'neg'}">${fmtR(d.em,2)}/trade</span>`)+
+    row('Recovery Factor',`<span class="${d.rf>=5?'pos':'neu'}">${fmt(d.rf,2)}</span>`)+
+    row('Sharpe adaptado',`<span class="${d.sharpe>=1?'pos':'neu'}">${fmt(d.sharpe,3)}</span>`);
+
+  document.getElementById('rep3').innerHTML=
+    hrow(['Indicador','Valor'])+
+    row('DD Monte Carlo p95',`<span class="neg">${fmtR(d.mcDDP95)}</span>`)+
+    row('Dependência de outliers',d.outGains.length===0?'<span class="pos">NÃO</span>':'<span class="neg">SIM</span>')+
+    row('Autocorrelação',Math.abs(d.pGivenG-d.wr)<0.1&&Math.abs(d.pGivenL-d.wr)<0.1?'<span class="pos">Praticamente nula</span>':'<span class="neu">Leve dependência</span>')+
+    row('% meses positivos',`<span class="${d.posMonths===d.monthKeys.length?'pos':'neu'}">${pct(d.posMonths/d.monthKeys.length)}</span>`)+
+    row('Maior seq. losses',`<span class="${d.maxLossSeq<=2?'pos':'neg'}">${d.maxLossSeq} trades</span>`)+
+    row('PF Rolling-20',d.rolling20!==null?`<span class="${d.rolling20>=d.pf*0.8?'pos':'neg'}">${d.rolling20===Infinity?'∞':fmt(d.rolling20,2)}${d.rolling20<d.pf*0.8?' 🚨':''}</span>`:'<span class="neu">Poucos trades</span>')+
+    row('PF Rolling-10',d.rolling10!==null?`<span class="${d.rolling10>=d.pf*0.8?'pos':'neg'}">${d.rolling10===Infinity?'∞':fmt(d.rolling10,2)}${d.rolling10<d.pf*0.8?' ⚠️':''}</span>`:'<span class="neu">Poucos trades</span>');
+
+  document.getElementById('rep4').innerHTML=
+    hrow(['Otimização','Valor'])+
+    row('Janela real',`${fmtTime(d.winMinH,d.winMinM)} → ${fmtTime(d.winMaxH,d.winMaxM)}`)+
+    row('Melhor horário','10h–11h (verificar em seu histórico)')+
+    row('Pior horário','Verificar análise de horários')+
+    row('Corte ideal de entradas',d.bestCut?`<span class="pos">${d.bestCut.label}</span>`:'—')+
+    row('Pausa recomendada',d.bestPause&&d.bestPause.lostProfit<0?`<span class="pos">${d.bestPause.label}</span>`:'Sem pausa clara')+
+    row('Dia mais fraco','Verificar análise de dias da semana');
+
+  // Strengths
+  const str=[];
+  if(d.wr>=0.75)str.push({t:'g',v:`Taxa de acerto de ${pct(d.wr)} — acima de 75%, característica de setup de alta precisão`});
+  if(d.pf>=2)str.push({t:'g',v:`Profit Factor de ${fmt(d.pf,2)} — muito acima do limiar de robustez (2,0)`});
+  if(d.rf>=5)str.push({t:'g',v:`Recovery Factor de ${fmt(d.rf,2)} — excelente relação lucro/risco`});
+  if(d.maxDD<d.totalProfit*0.3)str.push({t:'g',v:`Drawdown controlado em ${pct(d.maxDD/d.totalProfit)} do lucro total`});
+  if(d.outGains.length===0)str.push({t:'g',v:'Sem dependência de outliers — lucro distribuído entre todos os trades'});
+  if(d.posMonths===d.monthKeys.length)str.push({t:'g',v:`100% dos meses positivos no histórico (${d.monthKeys.length} meses)`});
+  if(d.maxWinSeq>=10)str.push({t:'g',v:`Sequência de ${d.maxWinSeq} wins consecutivos — estrutura do sinal é sólida`});
+  if(str.length===0)str.push({t:'a',v:'Setup em fase inicial — aguardar mais histórico para pontos fortes consolidados'});
+  document.getElementById('strengths').innerHTML=str.map(s=>`<li><div class="dot ${s.t}"></div><div>${s.v}</div></li>`).join('');
+
+  // Weaknesses
+  const wk=[];
+  if(d.payoff<0.8)wk.push({t:'r',v:`Payoff invertido (${fmt(d.payoff,3)}) — cada loss custa ${fmt(1/d.payoff,1)}x mais que cada gain. Exige manutenção do acerto elevado`});
+  if(d.rolling20!==null&&d.rolling20<d.pf*0.8)wk.push({t:'r',v:`PF Rolling-20 (${d.rolling20===Infinity?'∞':fmt(d.rolling20,2)}) abaixo de 80% do histórico — sinal de degradação ativo nas últimas 20 operações`});
+  else if(d.rolling10!==null&&d.rolling10<d.pf*0.8)wk.push({t:'y',v:`PF Rolling-10 (${d.rolling10===Infinity?'∞':fmt(d.rolling10,2)}) abaixo de 80% do histórico — alerta precoce, monitorar Rolling-20`});
+  if(d.sharpe<1)wk.push({t:'y',v:`Sharpe ${fmt(d.sharpe,3)} abaixo de 1,0 — variabilidade diária moderada (esperada para 1 trade/dia)`});
+  if(d.n<50)wk.push({t:'y',v:`Amostra de ${d.n} trades — histórico curto para conclusões definitivas. Recomendado mínimo de 100+ trades`});
+  if(d.maxLossSeq>=3)wk.push({t:'r',v:`Sequência máxima de ${d.maxLossSeq} losses consecutivos — avaliar regra de pausa`});
+  if(wk.length===0)wk.push({t:'y',v:'Nenhum ponto fraco crítico identificado no histórico disponível'});
+  document.getElementById('weaknesses').innerHTML=wk.map(s=>`<li><div class="dot ${s.t}"></div><div>${s.v}</div></li>`).join('');
+
+  // Recs
+  const recs=[];
+  if(d.bestCut)recs.push({t:'g',v:`<strong>Corte de entradas às ${d.bestCut.label}:</strong> Melhor relação lucro/DD/acerto. ${d.bestCut.n} trades com ${pct(d.bestCut.wr)} de acerto e DD de ${fmtR(d.bestCut.dd)}.`});
+  if(d.bestPause&&d.bestPause.lostProfit<0)recs.push({t:'g',v:`<strong>Pausa ${d.bestPause.label}:</strong> Bloquear entradas nesse período melhora o setup sem custo de oportunidade.`});
+  recs.push({t:'y',v:`<strong>Monitorar PF Rolling-20 semanalmente:</strong> Alerta dispara quando PF das últimas 20 operações cair abaixo de ${fmt(d.pf*0.8,2)} (80% do histórico). Rolling-10 serve como alerta precoce.`});
+  if(d.recentPF<d.pf*0.8&&d.rolling.length>0)recs.push({t:'r',v:`<strong>Atenção imediata:</strong> PF recente em queda. Revisar se houve mudança de regime ou parâmetros.`});
+  if(d.n<80)recs.push({t:'a',v:`<strong>Ampliar histórico:</strong> Com ${d.n} trades, os indicadores estatísticos ainda têm margem de erro relevante. Aguardar 100+ trades para conclusões definitivas.`});
+  recs.push({t:'a',v:`<strong>Escalonamento gradual:</strong> Com RF de ${fmt(d.rf,2)} e Monte Carlo sólido, o setup suporta escalonamento conservador quando o histórico confirmar estabilidade.`});
+  document.getElementById('recs').innerHTML=recs.map(r=>`<li><div class="dot ${r.t}"></div><div>${r.v}</div></li>`).join('');
+}
+
+// ══════════════════════ SIMULADOR ══════════════════════
+let simChart = null;
+let currentSimPct = 100;
+
+function showTab(id, btn) {
+  document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  if (btn) btn.classList.add('active');
+  if (id === 'curve') renderCurveChart();
+  if (id === 'temporal') renderMonthChart();
+  if (id === 'outliers') renderHistChart();
+  if (id === 'simulador') { runSim(currentSimPct, null); }
+}
+
+function runSim(pct2, btn) {
+  if (!A || !A.trades) return;
+  currentSimPct = pct2;
+  // Update button states
+  document.querySelectorAll('.sim-btn').forEach(b => {
+    b.classList.remove('active');
+    if (b.textContent.trim() === '100% (real)') b.classList.add('active-base');
+  });
+  if (btn) { btn.classList.remove('active-base'); btn.classList.add('active'); }
+  renderSimulator(pct2, null);
+}
+
+function runSimPts() {
+  const val = parseFloat(document.getElementById('simPtsInput').value);
+  if (!val || val <= 0) return;
+  document.querySelectorAll('.sim-btn').forEach(b => b.classList.remove('active'));
+  renderSimulator(null, val);
+}
+
+function renderSimulator(pctOfReal, fixedPts) {
+  const d = A;
+  if (!d || !d.trades) return;
+
+  // For each winning trade, calculate what the result would be with reduced gain
+  // Losing trades are unchanged (we can't simulate them without candle data)
+  const avgPts = d.avgPtsCapturado;
+
+  const simTrades = d.trades.map(t => {
+    if (t.resultado <= 0) {
+      // Loss: unchanged — we don't know if a wider stop would have helped
+      return { ...t, simResultado: t.resultado, simPts: 0, changed: false, blocked: false };
+    }
+    // Win: calculate simulated gain
+    let targetPts;
+    if (fixedPts !== null && fixedPts !== undefined) {
+      targetPts = fixedPts;
+    } else {
+      targetPts = t.ptsCapturado * (pctOfReal / 100);
+    }
+
+    // Can we simulate? Only if targetPts <= ptsCapturado (market proved it got there)
+    if (targetPts > t.ptsCapturado && t.ptsCapturado > 0) {
+      // Cannot simulate: would need candle data
+      return { ...t, simResultado: t.resultado, simPts: t.ptsCapturado, changed: false, blocked: true };
+    }
+
+    // Calculate simulated result in R$
+    // Original: resultado = ptsCapturado * valorPorPonto
+    // valorPorPonto = resultado / ptsCapturado
+    const valPorPto = t.ptsCapturado > 0 ? t.resultado / t.ptsCapturado : 0;
+    const simResultado = targetPts > 0 && valPorPto > 0
+      ? Math.round(targetPts * valPorPto * 100) / 100
+      : t.resultado;
+
+    return { ...t, simResultado, simPts: targetPts, changed: targetPts !== t.ptsCapturado, blocked: false };
+  });
+
+  // Compute simulated curve
+  let simCap = 0, realCap = 0;
+  const simCurve = [], realCurve = [];
+  simTrades.forEach(t => {
+    simCap += t.simResultado;
+    realCap += t.resultado;
+    simCurve.push(Math.round(simCap * 100) / 100);
+    realCurve.push(Math.round(realCap * 100) / 100);
+  });
+
+  // Sim stats
+  const simResults = simTrades.map(t => t.simResultado);
+  const simGains = simResults.filter(r => r > 0);
+  const simLosses = simResults.filter(r => r < 0);
+  const simTotal = simResults.reduce((a, b) => a + b, 0);
+  const simGrossP = simGains.reduce((a, b) => a + b, 0);
+  const simGrossL = Math.abs(simLosses.reduce((a, b) => a + b, 0));
+  const simPF = simGrossL > 0 ? simGrossP / simGrossL : Infinity;
+  const simWR = simGains.length / simResults.length;
+  let simPeak = 0, simDD = 0, simC2 = 0;
+  simCurve.forEach(v => {
+    if (v > simPeak) simPeak = v;
+    if (simPeak - v > simDD) simDD = simPeak - v;
+  });
+  const simRF = simDD > 0 ? simTotal / simDD : Infinity;
+  const blocked = simTrades.filter(t => t.blocked).length;
+
+  // Label
+  const label = fixedPts ? `${fixedPts} pts fixos` : `${pctOfReal}% do gain real`;
+
+  // KPIs
+  const diffTotal = simTotal - d.totalProfit;
+  document.getElementById('simKpis').innerHTML = [
+    kpiCard('Lucro Simulado', fmtR(simTotal), `${diffTotal >= 0 ? '+' : ''}${fmtR(diffTotal)} vs real`, simTotal >= d.totalProfit ? 'g' : 'r', simTotal >= d.totalProfit ? 'gt' : 'rt'),
+    kpiCard('Profit Factor Sim.', simPF === Infinity ? '∞' : fmt(simPF, 3), `Real: ${fmt(d.pf, 3)}`, simPF >= d.pf ? 'g' : 'r', ''),
+    kpiCard('Recovery Factor Sim.', simRF === Infinity ? '∞' : fmt(simRF, 2), `Real: ${fmt(d.rf, 2)}`, simRF >= d.rf ? 'g' : 'r', ''),
+    kpiCard('Trades bloqueados', String(blocked), `Gain maior que real — não simulável`, blocked > 0 ? 'y' : 'g', ''),
+  ].join('');
+
+  // Scenario table - all scenarios
+  const scenarios = [30, 40, 50, 60, 70, 80, 90, 100];
+  document.getElementById('simScenarioTable').innerHTML =
+    hrow(['Cenário', 'Lucro', 'PF', 'RF', 'DD', 'Bloqueados']) +
+    scenarios.map(sc => {
+      const sTrades = d.trades.map(t => {
+        if (t.resultado <= 0) return t.resultado;
+        const tgt = t.ptsCapturado * (sc / 100);
+        if (tgt > t.ptsCapturado && t.ptsCapturado > 0) return t.resultado;
+        const vpp = t.ptsCapturado > 0 ? t.resultado / t.ptsCapturado : 0;
+        return tgt > 0 && vpp > 0 ? Math.round(tgt * vpp * 100) / 100 : t.resultado;
+      });
+      const sG = sTrades.filter(r => r > 0); const sL = sTrades.filter(r => r < 0);
+      const sT = sTrades.reduce((a, b) => a + b, 0);
+      const sPF = Math.abs(sL.reduce((a, b) => a + b, 0)) > 0 ? sG.reduce((a, b) => a + b, 0) / Math.abs(sL.reduce((a, b) => a + b, 0)) : Infinity;
+      let sP = 0, sD = 0, sC = 0;
+      sTrades.forEach(r => { sC += r; if (sC > sP) sP = sC; if (sP - sC > sD) sD = sP - sC; });
+      const sRF = sD > 0 ? sT / sD : Infinity;
+      const sBlk = d.trades.filter(t => t.resultado > 0 && t.ptsCapturado > 0 && t.ptsCapturado * (sc / 100) > t.ptsCapturado).length;
+      const isActive = (fixedPts === null || fixedPts === undefined) && sc === pctOfReal;
+      return `<tr style="${isActive ? 'background:rgba(0,119,204,.07);font-weight:600' : ''}">
+        <td>${sc}%${sc === 100 ? ' <span style="color:var(--muted);font-size:10px">(real)</span>' : ''}</td>
+        <td class="${sT >= d.totalProfit ? 'pos' : 'neg'}">${fmtR(sT)}</td>
+        <td class="${sPF >= 2 ? 'pos' : sPF >= 1.3 ? 'neu' : 'neg'}">${sPF === Infinity ? '∞' : fmt(sPF, 2)}</td>
+        <td class="${sRF >= 5 ? 'pos' : sRF >= 2 ? 'neu' : 'neg'}">${sRF === Infinity ? '∞' : fmt(sRF, 2)}</td>
+        <td class="${sD < d.maxDD ? 'pos' : sD === d.maxDD ? 'neu' : 'neg'}">${fmtR(sD)}</td>
+        <td class="${sBlk > 0 ? 'neg' : 'pos'}">${sBlk > 0 ? sBlk + ' ⚠️' : '0'}</td>
+      </tr>`;
+    }).join('');
+
+  // Trade-by-trade table
+  document.getElementById('simTradeTable').innerHTML =
+    hrow(['Data', 'Hora entrada', 'Pts reais', 'Pts simulados', 'R$ real', 'R$ simulado', 'Diferença', 'Status']) +
+    simTrades.map(t => {
+      const diff = t.simResultado - t.resultado;
+      let status;
+      if (t.resultado < 0) status = badge('Loss — inalterado', 'r');
+      else if (t.blocked) status = badge('Bloqueado ⚠️', 'y');
+      else if (t.simPts < t.ptsCapturado) status = badge('Saída antecipada', 'a');
+      else status = badge('Igual ao real', 'p');
+      return trow([
+        t.date,
+        fmtTime(t.hour, t.minute),
+        { v: t.ptsCapturado > 0 ? fmt(t.ptsCapturado) + ' pts' : '—', cls: '' },
+        { v: t.simPts > 0 ? fmt(t.simPts) + ' pts' : '—', cls: '' },
+        { v: fmtR(t.resultado), cls: t.resultado >= 0 ? 'pos' : 'neg' },
+        { v: fmtR(t.simResultado), cls: t.simResultado >= 0 ? 'pos' : 'neg' },
+        { v: diff !== 0 ? (diff > 0 ? '+' : '') + fmtR(diff) : '—', cls: diff > 0 ? 'pos' : diff < 0 ? 'neg' : '' },
+        status,
+      ]);
+    }).join('');
+
+  // Insight box
+  const insight = [];
+  if (blocked > 0) {
+    insight.push({ cls: 'y', icon: '⚠️', text: `<strong>${blocked} trade(s) bloqueado(s)</strong> — o gain simulado é maior que o movimento real registrado. Para simular gains maiores que o real, seria necessário o histórico de candles do WIN.` });
+  }
+  if (simTotal > d.totalProfit) {
+    insight.push({ cls: 'g', icon: '💡', text: `Com gain de <strong>${label}</strong>, o lucro <strong>aumenta</strong> para ${fmtR(simTotal)} (+${fmtR(diffTotal)}). O setup sairia mais cedo em cada trade vencedor.` });
+  } else if (simTotal < d.totalProfit) {
+    insight.push({ cls: 'r', icon: '📉', text: `Com gain de <strong>${label}</strong>, o lucro <strong>cai</strong> para ${fmtR(simTotal)} (${fmtR(diffTotal)}). O gain configurado atual está melhor calibrado para os movimentos que o mercado entrega.` });
+  }
+  if (simDD < d.maxDD) {
+    insight.push({ cls: 'g', icon: '🛡️', text: `Drawdown máximo <strong>reduz</strong> de ${fmtR(d.maxDD)} para ${fmtR(simDD)} — saídas mais rápidas protegem o capital em cenários adversos.` });
+  }
+  document.getElementById('simInsightBox').innerHTML =
+    '<h3>Interpretação</h3>' + insight.map(i => alertBox(i.cls, i.icon, i.text)).join('');
+
+  // Chart
+  const labels = d.trades.map((t, i) => String(i + 1));
+  if (simChart) { simChart.destroy(); simChart = null; }
+  const ctx = document.getElementById('simCurveChart').getContext('2d');
+  simChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Real', data: realCurve, borderColor: C.muted, borderWidth: 1.5, borderDash: [4, 3], pointRadius: 0, fill: false, tension: 0.1 },
+        { label: `Simulado (${label})`, data: simCurve, borderColor: C.accent, borderWidth: 2, pointRadius: 3, pointBackgroundColor: simTrades.map(t => t.blocked ? C.yellow : t.resultado < 0 ? C.red : C.green), fill: true, backgroundColor: 'rgba(0,119,204,0.05)', tension: 0.1 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: true, labels: { color: '#5a6480', font: { size: 11 } } } },
+      scales: { x: { ticks: { maxTicksLimit: 12 } }, y: { ticks: { callback: v => 'R$' + v } } }
+    }
+  });
+}
+
+
+</script>
+</body>
+</html>
