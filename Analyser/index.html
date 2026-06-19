@@ -1591,24 +1591,37 @@ function initSimulator() {
 // Build gain/loss quick-pick buttons from real data
 function buildParamButtons() {
   const d = A;
-  const realGainPts = d.avgPtsCapturado > 0 ? Math.round(d.avgPtsCapturado) : 0;
-  const realLossPts = d.losses.length > 0 ? Math.round(Math.abs(d.avgLoss) / (d.trades[0]?.qty || 1) / 0.2) : 0;
+  // Gain real = movimento médio capturado em pontos, arredondado para 10
+  const realGainPts = d.avgPtsCapturado > 0 ? Math.round(d.avgPtsCapturado / 10) * 10 : 200;
+  // Loss real em pontos: avgLoss em R$ ÷ (contratos × 0,20 por ponto)
+  const qty = d.avgQty || 1;
+  const realLossPts = d.avgLoss > 0 ? Math.round(d.avgLoss / (qty * 0.2) / 10) * 10 : 200;
 
-  // Gain buttons: 25%, 50%, 75%, 100% of real avg pts captured, rounded to 5
-  const gainSteps = realGainPts > 0
-    ? [25, 50, 75, 100].map(p => Math.max(5, Math.round(realGainPts * p / 100 / 5) * 5))
-    : [50, 100, 150, 200];
-  const uniqueGains = [...new Set(gainSteps)];
+  // Gain buttons: de 100 pts até o gain real, de 10 em 10 pts
+  // Máximo de 10 botões para não poluir a tela
+  const gainMin = 100;
+  const gainMax = Math.max(gainMin + 10, realGainPts);
+  const gainRange = gainMax - gainMin;
+  const gainRawStep = Math.ceil(gainRange / 9 / 10) * 10; // step múltiplo de 10, máx 9 intervalos
+  const gainStep = Math.max(10, gainRawStep);
+  const gainSteps = [];
+  for (let g = gainMin; g <= gainMax; g += gainStep) gainSteps.push(g);
+  if (!gainSteps.includes(gainMax)) gainSteps.push(gainMax);
 
-  document.getElementById('gainBtns').innerHTML = uniqueGains.map(g =>
-    `<button class="sim-btn" onclick="setGainPts(${g},this)">${g} pts</button>`
-  ).join('') + `<button class="sim-btn active-base" onclick="setGainPts(null,this)">Real (${realGainPts > 0 ? realGainPts + ' pts' : 'auto'})</button>`;
+  document.getElementById('gainBtns').innerHTML = gainSteps.map(g =>
+    `<button class="sim-btn${g === gainMax ? ' active-base' : ''}" onclick="setGainPts(${g},this)">${g} pts${g === gainMax ? ' (real)' : ''}</button>`
+  ).join('');
 
-  // Loss buttons: 50%, 75%, 100% of real avg loss pts (only smaller losses are simulable)
-  const lossSteps = realLossPts > 0
-    ? [50, 75, 100].map(p => Math.max(5, Math.round(realLossPts * p / 100 / 5) * 5))
-    : [50, 100, 150];
-  const uniqueLosses = [...new Set(lossSteps)];
+  // Loss buttons: de 100 pts até o loss real, de 10 em 10 pts
+  const lossMin = 100;
+  const lossMax = Math.max(lossMin + 10, realLossPts);
+  const lossRange = lossMax - lossMin;
+  const lossRawStep = Math.ceil(lossRange / 9 / 10) * 10;
+  const lossStep = Math.max(10, lossRawStep);
+  const lossSteps = [];
+  for (let l = lossMin; l <= lossMax; l += lossStep) lossSteps.push(l);
+  if (!lossSteps.includes(lossMax)) lossSteps.push(lossMax);
+  const uniqueLosses = lossSteps;
 
   document.getElementById('lossBtns').innerHTML = uniqueLosses.map(l =>
     `<button class="sim-btn" onclick="setLossPts(${l},this)">${l} pts</button>`
@@ -1666,16 +1679,14 @@ function computeSweep(d) {
   const minWinPts = Math.min(...winPts);
   const avgWinPts = winPts.reduce((a, b) => a + b, 0) / winPts.length;
 
-  // Gain range: test from 10% to 100% of max observed pts, in steps
-  const gainStep = Math.max(5, Math.round(maxWinPts / 20 / 5) * 5);
+  // Gain range: de 100 pts até o gain real observado, de 10 em 10 (máx 10 passos)
+  const sweepMax = Math.max(110, Math.round(avgWinPts / 10) * 10);
+  const sweepRawStep = Math.ceil((sweepMax - 100) / 9 / 10) * 10;
+  const sweepStep = Math.max(10, sweepRawStep);
   const gainValues = [];
-  for (let g = Math.max(5, Math.round(minWinPts / 2 / 5) * 5); g <= maxWinPts; g += gainStep) {
-    gainValues.push(Math.round(g / 5) * 5);
-  }
-  if (!gainValues.includes(Math.round(avgWinPts / 5) * 5)) {
-    gainValues.push(Math.round(avgWinPts / 5) * 5);
-    gainValues.sort((a, b) => a - b);
-  }
+  for (let g = 100; g <= sweepMax; g += sweepStep) gainValues.push(g);
+  if (!gainValues.includes(sweepMax)) gainValues.push(sweepMax);
+  gainValues.sort((a, b) => a - b);
 
   // Loss range: test smaller losses only (larger not simulable)
   // We look at winning trades: how many pts did the market move before hitting gain?
@@ -1850,10 +1861,16 @@ function renderSimulator(gainPts, lossPts) {
   ].join('');
 
   // Scenario table
-  const gainCandidates = [25, 50, 75, 100, 150, 200, 300, 500].filter(g => {
-    const maxPts = Math.max(...d.trades.filter(t => t.ptsCapturado > 0).map(t => t.ptsCapturado));
-    return g <= maxPts;
-  });
+  // Cenários de 100 até o gain real em passos de 10 (máx 10 cenários)
+  const maxObservedPts = d.avgPtsCapturado > 0 ? Math.round(d.avgPtsCapturado / 10) * 10 : 200;
+  const scenarioMin = 100;
+  const scenarioMax = Math.max(scenarioMin + 10, maxObservedPts);
+  const scenarioRawStep = Math.ceil((scenarioMax - scenarioMin) / 9 / 10) * 10;
+  const scenarioStep = Math.max(10, scenarioRawStep);
+  const gainCandidates = [];
+  for (let g = scenarioMin; g <= scenarioMax; g += scenarioStep) gainCandidates.push(g);
+  if (!gainCandidates.includes(scenarioMax)) gainCandidates.push(scenarioMax);
+  ;
   document.getElementById('simScenarioTable').innerHTML =
     hrow(['Gain (pts)', 'Líquido', 'PF', 'RF', 'DD', 'Bloqueados']) +
     gainCandidates.map(g => {
