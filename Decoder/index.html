@@ -254,14 +254,17 @@ function statSimilarity(m,r){
 // Trade-by-trade matching using embedded raw trade signatures
 // TBT_DB[name] = [[day_offset, minute, sign, result_bucket], ...]
 // mystery._trades = [{r, date, mins, dow}]
-function tbtSimilarity(mysteryTrades, refName){
+function tbtSimilarity(mysteryTrades, refName, refCfg){
   const refTrades = TBT_DB[refName];
   if(!mysteryTrades||!refTrades||mysteryTrades.length<5||refTrades.length<5)
     return {twin:0,entry:0,close:0,score:0,n:0};
 
+  // Window = ref timeframe (can only enter within one candle)
+  const tf = parseInt((refCfg&&refCfg.periodicity)||'5')||5;
+  const closeWindow = tf; // strict: one candle period
+
   const epoch = new Date('2024-01-01');
-  
-  // Convert mystery trades to compact format
+
   const mByDay={};
   mysteryTrades.forEach(t=>{
     const dt=new Date(t.date+'T00:00:00');
@@ -272,7 +275,6 @@ function tbtSimilarity(mysteryTrades, refName){
     mByDay[dayOff].push([dayOff, t.mins, sign, bucket]);
   });
 
-  // Group ref by day
   const rByDay={};
   for(const t of refTrades){
     if(!rByDay[t[0]])rByDay[t[0]]=[];
@@ -280,7 +282,7 @@ function tbtSimilarity(mysteryTrades, refName){
   }
 
   const common=Object.keys(mByDay).filter(d=>rByDay[d]);
-  if(common.length<5) return {twin:0,entry:0,close:0,score:0,n:common.length};
+  if(common.length<3) return {twin:0,entry:0,close:0,score:0,n:common.length};
 
   let twin=0,entry=0,close=0,total=0;
   for(const d of common){
@@ -288,21 +290,21 @@ function tbtSimilarity(mysteryTrades, refName){
     for(const mt of mDay){
       total++;
       let matched=false;
-      // Twin: same minute + same sign + result within 5pts
+      // TWIN: same minute + same sign + result ±5pts
       for(const rt of rDay){
         if(mt[1]===rt[1] && mt[2]===rt[2] && Math.abs(mt[3]-rt[3])<=5){
           twin++; matched=true; break;
         }
       }
       if(matched) continue;
-      // Entry only: same minute, same sign
+      // ENTRY: same minute, same sign, different result
       for(const rt of rDay){
         if(mt[1]===rt[1] && mt[2]===rt[2]){ entry++; matched=true; break; }
       }
       if(matched) continue;
-      // Close: within 10 min, same sign, result within 15pts
+      // CLOSE: within ref timeframe window, same sign, result within 20pts
       for(const rt of rDay){
-        if(Math.abs(mt[1]-rt[1])<=10 && mt[2]===rt[2] && Math.abs(mt[3]-rt[3])<=15){
+        if(Math.abs(mt[1]-rt[1])<=closeWindow && mt[2]===rt[2] && Math.abs(mt[3]-rt[3])<=20){
           close++; break;
         }
       }
@@ -310,12 +312,12 @@ function tbtSimilarity(mysteryTrades, refName){
   }
   const n=total||1;
   const twinR=twin/n, entryR=entry/n, closeR=close/n;
-  return {twin:twinR, entry:entryR, close:closeR,
-          score:twinR*0.70+entryR*0.20+closeR*0.10, n:common.length};
+  // Score: twin is heavily dominant
+  const score=twinR*0.75+entryR*0.20+closeR*0.05;
+  return {twin:twinR, entry:entryR, close:closeR, score, n:common.length, tf};
 }
 
 
-// Combined final score: TBT dominant (70%) + stats (30%)
 function similarity(m,r){
   const stat = statSimilarity(m,r);
   // Without raw trades TBT not available yet — use stat only for initial sort
@@ -323,9 +325,89 @@ function similarity(m,r){
 }
 
 // Full score with TBT (called after raw trades available)
+// TWIN thresholds
+const TWIN_STRONG  = 0.40; // 40%+ → strong match
+const TWIN_MEDIUM  = 0.20; // 20%+ → possible match
+const TWIN_WEAK    = 0.08; // 8%+  → weak signal
+const TWIN_NONE    = 0.04; // below → no meaningful match
+
 function fullScore(statScore, tbt){
-  if(!tbt||tbt.n < 3) return statScore;
-  return Math.round((tbt.score*0.70 + (statScore/100)*0.30)*100);
+  if(!tbt || tbt.n < 3){
+    // No common days — stat only but capped low
+    return Math.min(statScore, 30);
+  }
+  const twin = tbt.twin;
+  // TBT score: twin dominant, entry secondary, close minor
+  const tbtScore = twin*0.75 + tbt.entry*0.15 + tbt.close*0.10;
+
+  if(twin < TWIN_NONE){
+    // Virtually no match — hard cap at 20% regardless of stat
+    return Math.min(Math.round(tbtScore*100*0.3 + statScore*0.1), 20);
+  }
+  if(twin < TWIN_WEAK){
+    // Weak signal — cap at 40%, stat has minimal weight
+    return Math.min(Math.round(tbtScore*100*0.80 + (statScore/100)*0.20*100), 40);
+  }
+  if(twin < TWIN_MEDIUM){
+    // Possible — cap at 65%
+    return Math.min(Math.round(tbtScore*100*0.75 + (statScore/100)*0.25*100), 65);
+  }
+  // Strong match — TBT dominant, no cap
+  return Math.round(tbtScore*100*0.70 + (statScore/100)*0.30*100);
+}
+
+// Interpret TWIN level
+function twinLabel(twin){
+  if(twin >= TWIN_STRONG)  return {label:'IDÊNTICO',  color:'var(--green)',  bg:'rgba(22,163,74,.12)'};
+  if(twin >= TWIN_MEDIUM)  return {label:'SIMILAR',   color:'var(--accent)', bg:'rgba(45,126,247,.12)'};
+  if(twin >= TWIN_WEAK)    return {label:'FRACO',     color:'var(--yellow)', bg:'rgba(217,119,6,.12)'};
+  return                          {label:'SEM MATCH', color:'var(--red)',    bg:'rgba(220,38,38,.10)'};
+}
+
+// Detect forced-close trades (e.g. fixed time like 17:35)
+function detectForcedClose(rawTrades){
+  const timeCounts = {};
+  rawTrades.forEach(t => { timeCounts[t.mins] = (timeCounts[t.mins]||0)+1; });
+  const sorted = Object.entries(timeCounts).sort((a,b)=>b[1]-a[1]);
+  const total = rawTrades.length;
+  // If any single minute accounts for >15% of all trades → forced close
+  const suspects = sorted.filter(([m,c]) => c/total > 0.15);
+  return suspects.map(([m,c]) => ({
+    mins: parseInt(m),
+    time: `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`,
+    count: c,
+    pct: Math.round(c/total*100)
+  }));
+}
+
+// Detect if setup uses fixed candle timeframe or indicator-based entries
+function detectEntryType(rawTrades){
+  // Get intra-day intervals
+  const byDate = {};
+  rawTrades.forEach(t => {
+    if(!byDate[t.date]) byDate[t.date]=[];
+    byDate[t.date].push(t.mins);
+  });
+  const intervals = [];
+  Object.values(byDate).forEach(mins => {
+    const s = mins.slice().sort((a,b)=>a-b);
+    for(let i=1;i<s.length;i++) if(s[i]-s[i-1]>0) intervals.push(s[i]-s[i-1]);
+  });
+  if(intervals.length < 5) return {type:'unknown', tf:null};
+
+  // Check if intervals cluster around multiples of common timeframes
+  const tfs = [1,2,3,5,10,14,15,20,25,29,30,60];
+  let bestTf = null, bestScore = 0;
+  for(const tf of tfs){
+    const hits = intervals.filter(x => {
+      const mod = x % tf;
+      return mod <= 1 || mod >= tf-1;
+    }).length;
+    const score = hits / intervals.length;
+    if(score > bestScore){ bestScore = score; bestTf = tf; }
+  }
+  if(bestScore > 0.70) return {type:'candle', tf:bestTf, confidence:Math.round(bestScore*100)};
+  return {type:'indicator', tf:null, confidence:Math.round((1-bestScore)*100)};
 }
 
 function deduce(fp,top){
@@ -442,8 +524,41 @@ function renderDed(deds){
 }
 
 function renderTable(ranks){
-  return`<table class="results-table"><thead><tr>
-    <th>#</th><th>Setup</th><th>Score Final</th><th>TWIN</th><th>ENTRY</th><th>CLOSE</th><th>Stat</th><th>WR</th><th>PF</th><th>Tr/Dia</th><th>Indicadores</th><th>TF</th>
+  // No-match warning
+  const noMatchBanner = (MFP&&MFP._noMatch) ? `
+    <div style="background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.3);border-radius:8px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:flex-start;gap:12px">
+      <span style="font-size:22px">&#9888;</span>
+      <div>
+        <div style="font-weight:700;color:var(--red);margin-bottom:4px">Nenhum setup similar encontrado no banco</div>
+        <div style="font-size:12px;color:var(--text2)">
+          TWIN máximo: <strong>${MFP._maxTwin}%</strong> — o setup misterioso não tem correspondência real nos 284 setups.
+          ${MFP._entryType&&MFP._entryType.type==='indicator'?'Entradas por <strong>sinal de indicador</strong> (horários irregulares) — banco pode não ter setups desta família.':''}
+          ${MFP._forcedClose&&MFP._forcedClose.length>0?`Detectado encerramento forçado às <strong>${MFP._forcedClose[0].time}</strong> (${MFP._forcedClose[0].pct}% dos trades) — excluídos do TBT.`:''}
+          <br>Os resultados abaixo são os <em>menos diferentes</em>, não necessariamente similares.
+        </div>
+      </div>
+    </div>` : '';
+
+  // Entry type + forced close info
+  let infoBanner = '';
+  if(MFP&&(MFP._entryType||MFP._forcedClose&&MFP._forcedClose.length>0)){
+    const et = MFP._entryType||{};
+    const fc = MFP._forcedClose||[];
+    const etStr = et.type==='candle'
+      ? `&#9201; Entradas por <strong>candle de ${et.tf}min</strong> (${et.confidence}% de confiança)`
+      : et.type==='indicator'
+      ? `&#128200; Entradas por <strong>sinal de indicador</strong> (horários irregulares)`
+      : '';
+    const fcStr = fc.length>0
+      ? `&nbsp;&nbsp;|&nbsp;&nbsp;&#128721; Encerramento forçado às <strong>${fc[0].time}</strong> (${fc[0].pct}% dos trades — excluído do TBT)`
+      : '';
+    if(etStr||fcStr){
+      infoBanner = `<div style="background:rgba(45,126,247,.07);border:1px solid rgba(45,126,247,.2);border-radius:8px;padding:10px 16px;margin-bottom:12px;font-size:12px;color:var(--text)">${etStr}${fcStr}</div>`;
+    }
+  }
+
+  return noMatchBanner + infoBanner + `<table class="results-table"><thead><tr>
+    <th>#</th><th>Setup</th><th>Score</th><th>TWIN &#9432;</th><th>ENTRY</th><th>CLOSE</th><th>Stat</th><th>WR</th><th>PF</th><th>Tr/Dia</th><th>Indicadores</th><th>TF</th>
   </tr></thead><tbody>
   ${ranks.slice(0,20).map((r,i)=>{
     const c=r.cfg||{};
@@ -460,10 +575,15 @@ function renderTable(ranks){
     return`<tr class="${i===0?'top-match':''}" onclick="expand(${i})" style="cursor:pointer">
       <td style="color:var(--text3);font-weight:600">${medal}${i>2?i+1:''}</td>
       <td><div style="font-weight:500">${nm}</div><div style="font-size:10px;color:var(--text3)">#${c.robot_id||''}</div></td>
-      <td><div class="score-bar"><div class="score-track"><div class="score-fill" style="width:${r.score}%"></div></div><div class="score-num">${r.score}%</div></div></td>
-      <td style="color:${r.twin>=60?'var(--green)':r.twin>=35?'var(--yellow)':'var(--text)'};font-weight:${r.twin>=35?'700':'400'}">${r.twin||0}%</td>
-      <td style="color:var(--text2)">${r.entry_m||0}%</td>
-      <td style="color:var(--text3)">${r.close||0}%</td>
+      <td><div class="score-bar"><div class="score-track"><div class="score-fill" style="width:${r.score}%;background:${r.twin>=40?'linear-gradient(90deg,var(--green),#16a34a)':r.twin>=20?'linear-gradient(90deg,var(--accent),var(--accent2))':r.twin>=8?'linear-gradient(90deg,var(--yellow),#b45309)':'linear-gradient(90deg,var(--red),#b91c1c)'}"></div></div><div class="score-num" style="color:${r.twin>=40?'var(--green)':r.twin>=20?'var(--accent)':r.twin>=8?'var(--yellow)':'var(--red)'}">${r.score}%</div></div></td>
+      <td>
+        ${(()=>{const tw=r.twin||0;const lbl=twinLabel(tw/100);
+          return `<span style="font-weight:700;color:${lbl.color}">${tw}%</span>
+          <span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700;background:${lbl.bg};color:${lbl.color};margin-left:4px">${lbl.label}</span>`;
+        })()}
+      </td>
+      <td style="color:var(--text2);font-size:12px">${r.entry_m||0}%</td>
+      <td style="color:var(--text3);font-size:12px">${r.close||0}%</td>
       <td style="color:var(--text3);font-size:11px">${r.stat||0}%</td>
       <td style="color:${cWR(r.bt.win_rate)}">${pct(r.bt.win_rate)}</td>
       <td style="color:${cPF(r.bt.profit_factor)}">${p(r.bt.profit_factor)}</td>
@@ -728,23 +848,38 @@ function runAnalysis(orders, labelInfo){
   statusEl.textContent+=' ⏳ Calculando TBT para 284 setups...';
 
   setTimeout(()=>{
-    // Re-rank using TBT for top candidates
-    // Since we don't have raw ref trades in embedded DB, 
-    // we use mystery raw trades day pattern to score each ref
-    // Rebuild synthetic ref trades from DB bt metadata (hour_dist + modal values)
-    let processed=0;
+    // Detect forced-close trades (e.g. 17:35) and entry type
+    const forcedClose = detectForcedClose(rawTrades);
+    const entryType = detectEntryType(rawTrades);
+    if(MFP){ MFP._forcedClose=forcedClose; MFP._entryType=entryType; }
+
+    // Filter out forced-close trades for TBT (they pollute matching)
+    const forcedMins = new Set(forcedClose.map(f=>f.mins));
+    const cleanTrades = rawTrades.filter(t => !forcedMins.has(t.mins));
+    const tradesForTBT = cleanTrades.length >= 10 ? cleanTrades : rawTrades;
+
+    // Compute TBT for all 284 setups
     for(const rank of RANKS){
-      const tbt=tbtSimilarity(rawTrades, rank.name);
-      rank.twin=Math.round(tbt.twin*100);
-      rank.entry_m=Math.round(tbt.entry*100);
-      rank.close=Math.round(tbt.close*100);
-      rank.tbt_n=tbt.n;
-      rank.score=fullScore(rank.stat, tbt);
+      const tbt = tbtSimilarity(tradesForTBT, rank.name);
+      rank.twin    = Math.round(tbt.twin*100);
+      rank.entry_m = Math.round(tbt.entry*100);
+      rank.close   = Math.round(tbt.close*100);
+      rank.tbt_n   = tbt.n;
+      rank.score   = fullScore(rank.stat, tbt);
     }
     RANKS.sort((a,b)=>b.score-a.score);
+
+    // Detect "no match" situation
+    const maxTwin = Math.max(...RANKS.map(r=>r.twin));
+    MFP._maxTwin = maxTwin;
+    MFP._noMatch = maxTwin < 8; // below 8% twin = no real match in DB
+
     renderDed(deduce(fp,RANKS));
     document.getElementById('rankingView').innerHTML=renderTable(RANKS);
-    statusEl.textContent=statusEl.textContent.replace(' ⏳ Calculando TBT para 284 setups...', ' ✓ TBT concluído');
+
+    // Update status
+    const twinStr = maxTwin < 8 ? ' ⚠ Sem match no banco' : ` ✓ TBT concluído (TWIN máx: ${maxTwin}%)`;
+    statusEl.textContent = statusEl.textContent.replace(' ⏳ Calculando TBT para 284 setups...', twinStr);
 
     // Show diagnostic
     const diagSection=document.getElementById('diagSection');
@@ -875,18 +1010,44 @@ function buildDiagReport(mystery, topMatches){
   let html = '';
 
   // SUMMARY ALERT
-  html += `<div class="alert-box alert-blue">
-    <strong>&#127919; Setup mais provável:</strong> <span style="color:var(--accent);font-size:14px;font-weight:700">${refName}</span>
-    &nbsp;|&nbsp; Similaridade: <strong>${best.score}%</strong>
-    &nbsp;|&nbsp; Base: <span style="font-weight:600">${refCfg.periodicity||'?'}min · ${refCfg.graphType||'normal'} · ${refCfg.entriesDirection||'any'}</span>
-  </div>`;
+  const noMatch = mystery._noMatch || false;
+  const maxTwin = mystery._maxTwin !== undefined ? mystery._maxTwin : best.twin;
+  const fc = mystery._forcedClose || [];
+  const et = mystery._entryType || {};
 
-  if(partialPct > 0.05){
+  if(fc.length > 0){
     html += `<div class="alert-box alert-yellow">
-      &#9888; <strong>${(partialPct*100).toFixed(0)}% dos gains são parciais</strong> (abaixo de ${modalGain}pts) — 
-      o setup misterioso pode ter stop móvel, Daily SG diferente ou janela de horário que força saída antecipada.
+      &#128721; <strong>Encerramento forçado às ${fc[0].time}</strong> — ${fc[0].count} trades (${fc[0].pct}%) nesse horário fixo foram excluídos do TBT.
     </div>`;
   }
+  if(et.type==='indicator'){
+    html += `<div class="alert-box alert-blue" style="margin-bottom:10px">
+      &#128200; <strong>Entradas por sinal de indicador</strong> — horários irregulares, não usa candle fechado como gatilho.
+    </div>`;
+  } else if(et.type==='candle'&&et.tf){
+    html += `<div class="alert-box alert-blue" style="margin-bottom:10px">
+      &#9201; <strong>Candle de ${et.tf} minutos</strong> detectado como timeframe de entrada (${et.confidence}% confiança).
+    </div>`;
+  }
+  if(noMatch){
+    html += `<div class="alert-box" style="background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.3);margin-bottom:12px">
+      &#9888; <strong>Nenhum setup similar no banco.</strong> TWIN máximo: <strong>${maxTwin}%</strong> (mínimo necessário: 8%).
+      Resultados abaixo são os menos diferentes, sem garantia de similaridade real.
+    </div>`;
+  } else {
+    html += `<div class="alert-box alert-blue">
+      <strong>&#127919; Setup mais provável:</strong> <span style="color:var(--accent);font-size:14px;font-weight:700">${refName}</span>
+      &nbsp;|&nbsp; Score: <strong>${best.score}%</strong>
+      &nbsp;|&nbsp; TWIN: <strong style="color:${best.twin>=40?'var(--green)':best.twin>=20?'var(--accent)':'var(--yellow)'}">${best.twin}%</strong>
+      &nbsp;|&nbsp; ${refCfg.periodicity||'?'}min · ${refCfg.graphType||'normal'} · ${refCfg.entriesDirection||'any'}
+    </div>`;
+  }
+  if(partialPct > 0.05){
+    html += `<div class="alert-box alert-yellow">
+      &#9888; <strong>${(partialPct*100).toFixed(0)}% dos gains são parciais</strong> (abaixo de ${modalGain}pts) — stop móvel ou Daily SG diferente.
+    </div>`;
+  }
+
 
   html += `<div class="diag-grid">`;
 
