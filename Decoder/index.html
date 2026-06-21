@@ -193,10 +193,10 @@ function extractFP(orders){
     modal_loss:ml,loss_uniformity:lu,n_days:nd,hour_dist:s?hd.map(v=>v/s):hd};
 }
 
-// ── Statistical similarity ──────────────────────────────────────
-function statSimilarity(m,r){
-  const W={win_rate:20,payoff:15,profit_factor:15,trades_per_day:15,avg_hour:10,modal_gain:10,modal_loss:10,gain_uniformity:5};
-  const R={win_rate:1,payoff:3,profit_factor:3,trades_per_day:15,avg_hour:8,modal_gain:300,modal_loss:300,gain_uniformity:1};
+// ── Statistical similarity (main ranking criterion) ─────────────
+function similarity(m,r){
+  const W={win_rate:25,payoff:20,profit_factor:15,trades_per_day:20,avg_hour:10,modal_gain:5,modal_loss:5};
+  const R={win_rate:1,payoff:3,profit_factor:3,trades_per_day:15,avg_hour:8,modal_gain:300,modal_loss:300};
   let tot=0,sc=0;
   for(const[k,w] of Object.entries(W)){const d=Math.abs((m[k]||0)-(r[k]||0))/R[k];sc+=Math.max(0,1-d)*w;tot+=w;}
   const hm=m.hour_dist||[],hr=r.hour_dist||[];
@@ -204,19 +204,20 @@ function statSimilarity(m,r){
     let dot=0,mm=0,mr=0;
     for(let i=0;i<24;i++){dot+=hm[i]*hr[i];mm+=hm[i]*hm[i];mr+=hr[i]*hr[i];}
     const cos=(mm>0&&mr>0)?dot/(Math.sqrt(mm)*Math.sqrt(mr)):0;
-    sc+=cos*20;tot+=20;
+    sc+=cos*25;tot+=25;
   }
-  return sc/tot;
+  return Math.round(sc/tot*100);
 }
 
-// ── Trade-by-trade similarity ───────────────────────────────────
-function tbtSimilarity(mysteryTrades, refName){
+// ── Trade-by-trade analysis (informational only, does not affect score) ─
+// Returns: {twin, entry, close, n} as percentages 0-100
+function tbtAnalysis(rawTrades, refName){
   const refTrades=TBT_DB[refName];
-  if(!mysteryTrades||!refTrades||mysteryTrades.length<5||refTrades.length<5)
-    return {twin:0,entry:0,close:0,score:0,n:0};
+  if(!rawTrades||!refTrades||rawTrades.length<5||refTrades.length<5)
+    return {twin:0,entry:0,close:0,n:0};
   const EPOCH_MS=Date.UTC(2024,0,1,12,0,0);
   const mByDay={};
-  mysteryTrades.forEach(t=>{
+  rawTrades.forEach(t=>{
     const ms=new Date(t.date+'T12:00:00Z').getTime();
     const dayOff=Math.round((ms-EPOCH_MS)/86400000);
     const bucket=Math.round(t.r/5)*5;
@@ -227,68 +228,28 @@ function tbtSimilarity(mysteryTrades, refName){
   const rByDay={};
   for(const t of refTrades){if(!rByDay[t[0]])rByDay[t[0]]=[];rByDay[t[0]].push(t);}
   const common=Object.keys(mByDay).filter(d=>rByDay[d]);
-  if(common.length<3)return {twin:0,entry:0,close:0,score:0,n:common.length};
+  if(common.length<3)return {twin:0,entry:0,close:0,n:common.length};
   let twin=0,entry=0,close=0,total=0;
   for(const d of common){
     const mDay=mByDay[d],rDay=rByDay[d];
     for(const mt of mDay){
       total++;
       let matched=false;
-      for(const rt of rDay){if(mt[1]===rt[1]&&mt[2]===rt[2]&&Math.abs(mt[3]-rt[3])<=5){twin++;matched=true;break;}}
+      for(const rt of rDay){
+        if(mt[1]===rt[1]&&mt[2]===rt[2]&&Math.abs(mt[3]-rt[3])<=5){twin++;matched=true;break;}
+      }
       if(matched)continue;
-      for(const rt of rDay){if(mt[1]===rt[1]&&mt[2]===rt[2]){entry++;matched=true;break;}}
+      for(const rt of rDay){
+        if(mt[1]===rt[1]&&mt[2]===rt[2]){entry++;matched=true;break;}
+      }
       if(matched)continue;
-      for(const rt of rDay){if(Math.abs(mt[1]-rt[1])<=5&&mt[2]===rt[2]&&Math.abs(mt[3]-rt[3])<=20){close++;break;}}
+      for(const rt of rDay){
+        if(Math.abs(mt[1]-rt[1])<=5&&mt[2]===rt[2]&&Math.abs(mt[3]-rt[3])<=20){close++;break;}
+      }
     }
   }
-  const n=total||1,twinR=twin/n,entryR=entry/n,closeR=close/n;
-  return {twin:twinR,entry:entryR,close:closeR,score:twinR*0.75+entryR*0.15+closeR*0.10,n:common.length};
-}
-
-// ── Scoring ─────────────────────────────────────────────────────
-function fullScore(statScore,tbt){
-  if(!tbt||tbt.n<3)return Math.min(statScore,30);
-  const twin=tbt.twin;
-  const tbtScore=twin*0.75+tbt.entry*0.15+tbt.close*0.10;
-  if(twin<0.05)return Math.min(Math.round(tbtScore*30+statScore*0.05),20);
-  if(twin<0.10)return Math.min(Math.round(tbtScore*100*0.80+(statScore/100)*20),40);
-  if(twin<0.20)return Math.min(Math.round(tbtScore*100*0.75+(statScore/100)*25),65);
-  return Math.round(tbtScore*100*0.70+(statScore/100)*30);
-}
-
-function twinLabel(tw){
-  if(tw>=40)return {label:'IDENTICO', color:'var(--green)', bg:'rgba(22,163,74,.12)'};
-  if(tw>=20)return {label:'SIMILAR',  color:'var(--accent)',bg:'rgba(45,126,247,.12)'};
-  if(tw>=8) return {label:'FRACO',    color:'var(--yellow)',bg:'rgba(217,119,6,.12)'};
-  return           {label:'SEM MATCH',color:'var(--red)',  bg:'rgba(220,38,38,.10)'};
-}
-
-// ── Detectors ───────────────────────────────────────────────────
-function detectForcedClose(rawTrades){
-  const tc={};rawTrades.forEach(t=>{tc[t.mins]=(tc[t.mins]||0)+1;});
-  const total=rawTrades.length;
-  return Object.entries(tc).filter(([m,c])=>c/total>0.15).sort((a,b)=>b[1]-a[1])
-    .map(([m,c])=>{const mi=+m;return{mins:mi,time:`${String(Math.floor(mi/60)).padStart(2,'0')}:${String(mi%60).padStart(2,'0')}`,count:c,pct:Math.round(c/total*100)}});
-}
-
-function detectEntryType(rawTrades){
-  const byDate={};
-  rawTrades.forEach(t=>{if(!byDate[t.date])byDate[t.date]=[];byDate[t.date].push(t.mins);});
-  const intervals=[];
-  Object.values(byDate).forEach(mins=>{
-    const s=mins.slice().sort((a,b)=>a-b);
-    for(let i=1;i<s.length;i++)if(s[i]-s[i-1]>0)intervals.push(s[i]-s[i-1]);
-  });
-  if(intervals.length<5)return {type:'unknown',tf:null,confidence:0};
-  const tfs=[1,2,3,5,10,14,15,20,25,29,30,60];
-  let bestTf=null,bestScore=0;
-  for(const tf of tfs){
-    const hits=intervals.filter(x=>{const mod=x%tf;return mod<=1||mod>=tf-1;}).length;
-    const score=hits/intervals.length;
-    if(score>bestScore){bestScore=score;bestTf=tf;}
-  }
-  if(bestScore>0.70)return {type:'candle',tf:bestTf,confidence:Math.round(bestScore*100)};
-  return {type:'indicator',tf:null,confidence:Math.round((1-bestScore)*100)};
+  const n=total||1;
+  return{twin:Math.round(twin/n*100),entry:Math.round(entry/n*100),close:Math.round(close/n*100),n:common.length};
 }
 
 // ── Deductions ──────────────────────────────────────────────────
@@ -296,15 +257,15 @@ function deduce(fp,top){
   const d=[];const tpd=fp.trades_per_day;
   let tf='';
   if(tpd>=20)tf='1 min (scalper rapido)';
-  else if(tpd>=8)tf='1-2 min (scalper)';
+  else if(tpd>=8)tf='1-2 min';
   else if(tpd>=3)tf='3-5 min';
   else if(tpd>=1.5)tf='5-10 min';
   else tf='15+ min';
   d.push({l:'Timeframe estimado',v:tf,c:tpd>8?'Alta':tpd>3?'Media':'Baixa',i:'&#9201;'});
   const fixTP=fp.gain_uniformity>0.7;
   d.push({l:'Stop Gain',v:fixTP?`~${Math.abs(fp.modal_gain).toFixed(0)}pts (fixo ${(fp.gain_uniformity*100).toFixed(0)}%)`:`Variavel (avg ${fp.avg_gain.toFixed(0)}pts)`,c:fp.gain_uniformity>.85?'Alta':'Media',i:'&#127919;'});
-  d.push({l:'Stop Loss',v:fp.loss_uniformity>0.5?`~${Math.abs(fp.modal_loss).toFixed(0)}pts (fixo ${(fp.loss_uniformity*100).toFixed(0)}%)`:`Variavel (avg ${Math.abs(fp.avg_loss).toFixed(0)}pts)`,c:fp.loss_uniformity>.7?'Alta':'Media',i:'&#128721;'});
-  d.push({l:'Janela de operacao',v:`${String(Math.max(9,Math.floor(fp.avg_hour-fp.hour_std))).padStart(2,'0')}h - ${String(Math.min(18,Math.ceil(fp.avg_hour+fp.hour_std))).padStart(2,'0')}h`,c:fp.hour_std<2?'Alta':'Media',i:'&#128336;'});
+  d.push({l:'Stop Loss',v:fp.loss_uniformity>0.5?`~${Math.abs(fp.modal_loss).toFixed(0)}pts (${(fp.loss_uniformity*100).toFixed(0)}%)`:`Variavel (avg ${Math.abs(fp.avg_loss).toFixed(0)}pts)`,c:fp.loss_uniformity>.7?'Alta':'Media',i:'&#128721;'});
+  d.push({l:'Janela',v:`${String(Math.max(9,Math.floor(fp.avg_hour-fp.hour_std))).padStart(2,'0')}h - ${String(Math.min(18,Math.ceil(fp.avg_hour+fp.hour_std))).padStart(2,'0')}h`,c:fp.hour_std<2?'Alta':'Media',i:'&#128336;'});
   let prof='';
   if(fp.win_rate>.7&&fp.payoff<0.8)prof='Scalper alta taxa';
   else if(fp.win_rate<0.5&&fp.payoff>1.5)prof='Tendencial';
@@ -322,7 +283,7 @@ function deduce(fp,top){
     });
     const N=Math.min(5,top.length);
     const ai=Object.entries(iv).filter(([,v])=>v/N>=0.6).map(([k])=>k.toUpperCase());
-    if(ai.length)d.push({l:'Indicadores (top-5)',v:ai.join(', '),c:'Baseada nos similares',i:'&#128202;'});
+    if(ai.length)d.push({l:'Indicadores (top-5)',v:ai.join(', '),c:'Referencia',i:'&#128202;'});
     const td=Object.entries(dv).sort((a,b)=>b[1]-a[1])[0];
     if(td){const dn={any:'Bidirecional',long:'Somente Compra',short:'Somente Venda'};d.push({l:'Direcao',v:dn[td[0]]||td[0],c:td[1]/N>=.8?'Alta':'Media',i:'&#8597;'});}
   }
@@ -335,7 +296,6 @@ function cPF(v){return v>=1.5?'var(--green)':v>=1.0?'var(--yellow)':'var(--red)'
 function p(v,d=2){return parseFloat(v).toFixed(d)}
 function pct(v){return(v*100).toFixed(1)+'%'}
 function minsToHM(m){return String(Math.floor(m/60)).padStart(2,'0')+':'+String(Math.round(m%60)).padStart(2,'0');}
-function timeToMins(s){if(!s)return 0;const pt=s.split(':');return parseInt(pt[0])*60+parseInt(pt[1]||0);}
 function cConf(c){return c==='Alta'?'var(--green)':c==='Baixa'?'var(--red)':'var(--yellow)'}
 
 let MFP=null,RANKS=[],EXP=-1;
@@ -390,17 +350,8 @@ function renderDed(deds){
 }
 
 function renderTable(ranks){
-  const noMatch=MFP&&MFP._noMatch;
-  const maxTwin=MFP&&MFP._maxTwin!==undefined?MFP._maxTwin:0;
-  const fc=MFP&&MFP._forcedClose||[];
-  const et=MFP&&MFP._entryType||{};
-  let banners='';
-  if(noMatch)banners+=`<div style="background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.3);border-radius:8px;padding:14px;margin-bottom:12px;font-size:13px"><strong style="color:var(--red)">&#9888; Nenhum setup similar no banco</strong> — TWIN maximo: <strong>${maxTwin}%</strong>. Resultados abaixo sao os menos diferentes, sem garantia de similaridade.</div>`;
-  if(fc.length>0)banners+=`<div style="background:rgba(217,119,6,.08);border:1px solid rgba(217,119,6,.25);border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:12px">&#128721; Encerramento forcado as <strong>${fc[0].time}</strong> (${fc[0].pct}% dos trades) — excluido do TBT.</div>`;
-  if(et.type==='indicator')banners+=`<div style="background:rgba(45,126,247,.07);border:1px solid rgba(45,126,247,.2);border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:12px">&#128200; Entradas por <strong>sinal de indicador</strong> (horarios irregulares).</div>`;
-  else if(et.type==='candle'&&et.tf)banners+=`<div style="background:rgba(45,126,247,.07);border:1px solid rgba(45,126,247,.2);border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:12px">&#9201; Candle de <strong>${et.tf} minutos</strong> detectado (${et.confidence}% confianca).</div>`;
-  return banners+`<table class="results-table"><thead><tr>
-    <th>#</th><th>Setup</th><th>Score</th><th>TWIN</th><th>ENTRY</th><th>CLOSE</th><th>Stat</th><th>WR</th><th>PF</th><th>Tr/Dia</th><th>Indicadores</th><th>TF</th>
+  return`<table class="results-table"><thead><tr>
+    <th>#</th><th>Setup</th><th>Similaridade</th><th>TBT Exato</th><th>TBT Entrada</th><th>WR</th><th>PF</th><th>Payoff</th><th>Tr/Dia</th><th>Indicadores</th><th>TF</th>
   </tr></thead><tbody>
   ${ranks.slice(0,20).map((r,i)=>{
     const c=r.cfg||{};
@@ -414,19 +365,19 @@ function renderTable(ranks){
     if(c.cma)inds.push('<span class="pill pill-purple">MA</span>');
     const nm=(c.robot_name||r.name||'').replace(/_/g,' ').trim();
     const medal=i===0?'&#129351; ':i===1?'&#129352; ':i===2?'&#129353; ':'';
-    const tw=r.twin||0,lbl=twinLabel(tw);
-    const scoreColor=tw>=40?'var(--green)':tw>=20?'var(--accent)':tw>=8?'var(--yellow)':'var(--red)';
-    const barBg=tw>=40?'linear-gradient(90deg,var(--green),#16a34a)':tw>=20?'linear-gradient(90deg,var(--accent),var(--accent2))':tw>=8?'linear-gradient(90deg,var(--yellow),#b45309)':'linear-gradient(90deg,var(--red),#b91c1c)';
+    const tbt=r.tbt||{};
+    const tbtExato=tbt.twin||0;
+    const tbtEntrada=(tbt.twin||0)+(tbt.entry||0);
+    const tbtColor=tbtExato>=40?'var(--green)':tbtExato>=20?'var(--accent)':tbtExato>=8?'var(--yellow)':'var(--text3)';
     return`<tr class="${i===0?'top-match':''}" onclick="expand(${i})" style="cursor:pointer">
       <td style="color:var(--text3);font-weight:600">${medal}${i>2?i+1:''}</td>
       <td><div style="font-weight:500">${nm}</div><div style="font-size:10px;color:var(--text3)">#${c.robot_id||''}</div></td>
-      <td><div class="score-bar"><div class="score-track"><div class="score-fill" style="width:${r.score}%;background:${barBg}"></div></div><div class="score-num" style="color:${scoreColor}">${r.score}%</div></div></td>
-      <td><span style="font-weight:700;color:${lbl.color}">${tw}%</span> <span style="display:inline-block;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;background:${lbl.bg};color:${lbl.color}">${lbl.label}</span></td>
-      <td style="color:var(--text2);font-size:12px">${r.entry_m||0}%</td>
-      <td style="color:var(--text3);font-size:12px">${r.close||0}%</td>
-      <td style="color:var(--text3);font-size:11px">${r.stat||0}%</td>
+      <td><div class="score-bar"><div class="score-track"><div class="score-fill" style="width:${r.score}%;background:linear-gradient(90deg,var(--accent),var(--accent2))"></div></div><div class="score-num" style="color:var(--accent)">${r.score}%</div></div></td>
+      <td style="color:${tbtColor};font-weight:${tbtExato>=20?'700':'400'}">${tbt.n>0?tbtExato+'%':'—'}</td>
+      <td style="color:var(--text2);font-size:12px">${tbt.n>0?tbtEntrada+'%':'—'}</td>
       <td style="color:${cWR(r.bt.win_rate)}">${pct(r.bt.win_rate)}</td>
       <td style="color:${cPF(r.bt.profit_factor)}">${p(r.bt.profit_factor)}</td>
+      <td>${p(r.bt.payoff)}</td>
       <td style="color:var(--cyan)">${p(r.bt.trades_per_day,1)}</td>
       <td>${inds.join('')||'<span style="color:var(--text3)">-</span>'}</td>
       <td><span class="pill pill-blue">${c.periodicity||'?'}m</span></td>
@@ -436,18 +387,21 @@ function renderTable(ranks){
 }
 
 function renderCards(ranks){
-  const noMatch=MFP&&MFP._noMatch,maxTwin=MFP&&MFP._maxTwin||0;
-  let banner=noMatch?`<div style="background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.3);border-radius:8px;padding:14px;margin-bottom:14px;font-size:13px"><strong style="color:var(--red)">&#9888; Nenhum setup similar no banco</strong> — TWIN max: ${maxTwin}%</div>`:'';
-  return banner+`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:14px">
+  return`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:14px">
   ${ranks.slice(0,12).map((r,i)=>{
     const c=r.cfg||{};
     const nm=(c.robot_name||r.name||'').replace(/_/g,' ').trim();
     const medal=i===0?'&#129351; ':i===1?'&#129352; ':i===2?'&#129353; ':'';
-    const tw=r.twin||0,lbl=twinLabel(tw);
+    const tbt=r.tbt||{};
+    const tbtExato=tbt.twin||0;
+    const tbtColor=tbtExato>=40?'var(--green)':tbtExato>=20?'var(--accent)':tbtExato>=8?'var(--yellow)':'var(--text3)';
     return`<div class="card" onclick="expand(${i})" style="cursor:pointer;border-color:${i===0?'var(--accent)':'var(--border)'}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
         <div><div style="font-weight:600;font-size:14px">${medal}${nm}</div><div style="font-size:10px;color:var(--text3)">#${c.robot_id||r.name}</div></div>
-        <div style="text-align:right"><div style="font-size:20px;font-weight:700;color:${lbl.color}">${r.score}%</div><div style="font-size:9px;font-weight:700;color:${lbl.color}">${lbl.label}</div></div>
+        <div style="text-align:right">
+          <div style="font-size:20px;font-weight:700;color:var(--accent)">${r.score}%</div>
+          ${tbt.n>0?`<div style="font-size:10px;font-weight:600;color:${tbtColor}">TBT: ${tbtExato}%</div>`:''}
+        </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
         <div style="text-align:center"><div style="font-size:14px;font-weight:600;color:${cWR(r.bt.win_rate)}">${pct(r.bt.win_rate)}</div><div style="font-size:9px;color:var(--text3)">WIN RATE</div></div>
@@ -455,7 +409,7 @@ function renderCards(ranks){
         <div style="text-align:center"><div style="font-size:14px;font-weight:600;color:var(--cyan)">${p(r.bt.trades_per_day,1)}</div><div style="font-size:9px;color:var(--text3)">TR/DIA</div></div>
       </div>
       <div style="border-top:1px solid var(--border);padding-top:8px;font-size:11px;color:var(--text2)">
-        TWIN: <strong style="color:${lbl.color}">${tw}%</strong> &middot; ~${Math.abs(r.bt.modal_gain)}pts / ${Math.abs(r.bt.modal_loss)}pts &middot; ${p(r.bt.avg_hour,1)}h &middot; ${c.periodicity||'?'}m
+        ~${Math.abs(r.bt.modal_gain)}pts / ${Math.abs(r.bt.modal_loss)}pts &middot; ${p(r.bt.avg_hour,1)}h &middot; ${c.periodicity||'?'}m
       </div>
     </div>`;
   }).join('')}
@@ -473,6 +427,7 @@ function expand(idx){
   if(c.vwap)inds.push('VWAP');if(c.bb)inds.push('BB');if(c.stoch)inds.push('STOCH');
   if(c.adx)inds.push('ADX');if(c.cma)inds.push(`MA(${c.short_ma}/${c.long_ma})`);if(c.macd)inds.push('MACD');
   const M=MFP;
+  const tbt=r.tbt||{};
   const comps=[
     {l:'Win Rate',my:pct(M.win_rate),ref:pct(r.bt.win_rate),d:Math.abs(M.win_rate-r.bt.win_rate),t:.05},
     {l:'Profit Factor',my:p(M.profit_factor),ref:p(r.bt.profit_factor),d:Math.abs(M.profit_factor-r.bt.profit_factor),t:.3},
@@ -485,18 +440,23 @@ function expand(idx){
   ];
   dp.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div><strong style="font-size:15px">${nm}</strong> <span style="color:var(--text2);font-size:12px">Score: ${r.score}% | TWIN: ${r.twin||0}%</span></div>
+      <div><strong style="font-size:15px">${nm}</strong>
+        <span style="color:var(--text2);font-size:12px;margin-left:8px">Similaridade: ${r.score}%</span>
+        ${tbt.n>0?`<span style="font-size:12px;margin-left:8px">| TBT Exato: <strong style="color:${tbt.twin>=40?'var(--green)':tbt.twin>=20?'var(--accent)':'var(--text2)}">${tbt.twin}%</strong> | Entrada: <strong>${(tbt.twin||0)+(tbt.entry||0)}%</strong> | Dias comuns: ${tbt.n}</span>`:''}
+      </div>
       <button class="btn btn-ghost" onclick="expand(${idx})">Fechar</button>
     </div>
     <div class="cfg-row">
       <div><span>TF:</span> <strong>${c.periodicity||'?'}m ${c.graphType||''}</strong></div>
       <div><span>Direcao:</span> <strong>${c.entriesDirection||'any'}</strong></div>
-      <div><span>SL:</span> <strong>${c.sl||'?'}pts</strong></div><div><span>SG:</span> <strong>${c.sg||'?'}pts</strong></div>
-      <div><span>Daily SL:</span> <strong>${c.daily_sl||'?'}</strong></div><div><span>Daily SG:</span> <strong>${c.daily_sg||'?'}</strong></div>
+      <div><span>SL:</span> <strong>${c.sl||'?'}pts</strong></div>
+      <div><span>SG:</span> <strong>${c.sg||'?'}pts</strong></div>
+      <div><span>Daily SL:</span> <strong>${c.daily_sl||'?'}</strong></div>
+      <div><span>Daily SG:</span> <strong>${c.daily_sg||'?'}</strong></div>
       <div><span>Horario:</span> <strong>${c.start_time||''} - ${c.end_time||''}</strong></div>
       <div><span>Indicadores:</span> <strong>${inds.join(', ')||'nenhum'}</strong></div>
     </div>
-    <div style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;margin-bottom:10px">Seu setup vs referencia</div>
+    <div style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;margin-bottom:10px">Comparacao de metricas</div>
     <div class="compare-grid">
       ${comps.map(cc=>{const cls=cc.d<cc.t?'match':cc.d<cc.t*3?'near':'diff';return`<div class="compare-item ${cls}"><div class="lbl">${cc.l}</div><div class="my">${cc.my}</div><div class="ref">ref: ${cc.ref}</div></div>`;}).join('')}
     </div>`;
@@ -538,7 +498,7 @@ function parseSmartTBotCSV(txt){
     const rawResult=row[iResult]||'';
     const val=parseFloat(rawResult.replace(/\./g,'').replace(',','.'));
     let isSaida=true;
-    if(iType!==-1){const tipo=(row[iType]||'').toLowerCase();isSaida=/sa[ií]da|exit|close|sell|s$/.test(tipo);if(/entrada|entry|open|buy|compra|b$/.test(tipo))isSaida=false;}
+    if(iType!==-1){const tipo=(row[iType]||'').toLowerCase();isSaida=/sa[i\u00ed]da|exit|close|sell|s$/.test(tipo);if(/entrada|entry|open|buy|compra|b$/.test(tipo))isSaida=false;}
     if(isNaN(val)){let dtStr='';if(iDatetime!==-1)dtStr=row[iDatetime]||'';else if(iDate!==-1)dtStr=(row[iDate]||'')+' '+(iTime!==-1?row[iTime]:'00:00:00');orders.push({datetime:dtStr,gross_profit:null});continue;}
     if(!isSaida&&iType!==-1)continue;
     let dtStr='';
@@ -565,6 +525,7 @@ function runAnalysis(orders, labelInfo){
   st.textContent=labelInfo+` | ${fp.total_trades} trades | ${fp.n_days} dias`;
   renderMysteryCard(fp);
 
+  // Build raw trades for TBT
   const rawTrades=[];
   orders.forEach(x=>{
     if(x.gross_profit!==null&&x.gross_profit!==undefined){
@@ -575,57 +536,31 @@ function runAnalysis(orders, labelInfo){
       }catch(e){}
     }
   });
-  if(MFP)MFP._trades=rawTrades;
 
+  // Stat ranking (immediate)
   RANKS=[];
   for(const[name,entry] of DB_ENTRIES){
     if(!entry.bt)continue;
-    const stat=statSimilarity(fp,entry.bt);
-    RANKS.push({name,score:Math.round(stat*100),stat:Math.round(stat*100),twin:0,entry_m:0,close:0,tbt_n:0,bt:entry.bt,cfg:entry.cfg});
+    RANKS.push({name,score:similarity(fp,entry.bt),tbt:{},bt:entry.bt,cfg:entry.cfg});
   }
   RANKS.sort((a,b)=>b.score-a.score);
 
   document.getElementById('resultsSection').style.display='block';
-  renderStats(fp);renderHour(fp);renderDed(deduce(fp,[]));
+  renderStats(fp);renderHour(fp);renderDed(deduce(fp,RANKS));
   document.getElementById('rankingView').innerHTML=renderTable(RANKS);
   EXP=-1;
   setTimeout(()=>document.getElementById('resultsSection').scrollIntoView({behavior:'smooth'}),150);
 
+  // TBT in background — informational only, does NOT change scores or ranking
   const statusEl=document.getElementById('uploadStatus');
   statusEl.textContent+=' | ⏳ Calculando TBT...';
-
   setTimeout(()=>{
-    const forcedClose=detectForcedClose(rawTrades);
-    const entryType=detectEntryType(rawTrades);
-    MFP._forcedClose=forcedClose;MFP._entryType=entryType;
-    const forcedMins=new Set(forcedClose.map(f=>f.mins));
-    const cleanTrades=rawTrades.filter(t=>!forcedMins.has(t.mins));
-    const tradesForTBT=cleanTrades.length>=10?cleanTrades:rawTrades;
-
     for(const rank of RANKS){
-      const tbt=tbtSimilarity(tradesForTBT,rank.name);
-      rank.twin=Math.round(tbt.twin*100);
-      rank.entry_m=Math.round(tbt.entry*100);
-      rank.close=Math.round(tbt.close*100);
-      rank.tbt_n=tbt.n;
-      rank.score=fullScore(rank.stat,tbt);
+      rank.tbt=tbtAnalysis(rawTrades,rank.name);
     }
-    RANKS.sort((a,b)=>b.score-a.score);
-
-    const maxTwin=Math.max(...RANKS.map(r=>r.twin));
-    MFP._maxTwin=maxTwin;
-    MFP._noMatch=maxTwin<5;
-
-    renderDed(deduce(fp,RANKS));
+    // Re-render table with TBT columns filled — ranking order unchanged
     document.getElementById('rankingView').innerHTML=renderTable(RANKS);
-    statusEl.textContent=statusEl.textContent.replace(' | ⏳ Calculando TBT...',maxTwin<5?' ⚠ Sem match no banco':` ✓ TBT (TWIN max: ${maxTwin}%)`);
-
-    const diagSection=document.getElementById('diagSection');
-    const diagContent=document.getElementById('diagContent');
-    if(diagSection&&diagContent&&MFP&&MFP._trades){
-      try{diagContent.innerHTML=buildDiagReport(MFP,RANKS);diagSection.style.display='block';}
-      catch(e){console.error('Diag:',e);}
-    }
+    statusEl.textContent=statusEl.textContent.replace(' | ⏳ Calculando TBT...',' | ✓ TBT concluido');
   },50);
 }
 
@@ -660,70 +595,6 @@ inp.addEventListener('change',e=>{if(e.target.files[0])processFile(e.target.file
 zone.addEventListener('dragover',e=>{e.preventDefault();zone.classList.add('drag');});
 zone.addEventListener('dragleave',()=>zone.classList.remove('drag'));
 zone.addEventListener('drop',e=>{e.preventDefault();zone.classList.remove('drag');if(e.dataTransfer.files[0])processFile(e.dataTransfer.files[0]);});
-
-function buildDiagReport(mystery, topMatches){
-  const best = topMatches[0];
-  if(!best) return '<p style="color:var(--text2)">Nenhum candidato disponivel.</p>';
-  const bestCfg = best.cfg || {};
-  const refName = (bestCfg.robot_name || best.name || '').replace(/_/g,' ').trim();
-  const noMatch = mystery._noMatch || false;
-  const fc = mystery._forcedClose || [];
-  const et = mystery._entryType || {};
-
-  let html = '';
-
-  if(fc.length > 0){
-    html += `<div class="alert-box alert-yellow">&#128721; <strong>Encerramento forcado as ${fc[0].time}</strong> — ${fc[0].count} trades (${fc[0].pct}%) excluidos do TBT.</div>`;
-  }
-  if(et.type==='indicator'){
-    html += `<div class="alert-box alert-blue">&#128200; <strong>Entradas por sinal de indicador</strong> — horarios irregulares.</div>`;
-  } else if(et.type==='candle' && et.tf){
-    html += `<div class="alert-box alert-blue">&#9201; <strong>Candle de ${et.tf} minutos</strong> detectado (${et.confidence}% confianca).</div>`;
-  }
-
-  if(noMatch){
-    html += `<div class="alert-box" style="background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.3)">
-      &#9888; <strong>Nenhum setup similar no banco.</strong> TWIN maximo: <strong>${mystery._maxTwin}%</strong>.<br>
-      Os parametros abaixo sao do candidato menos diferente, nao necessariamente similar.
-    </div>`;
-  } else {
-    html += `<div class="alert-box alert-blue">
-      <strong>&#127919; Setup mais provavel:</strong> <span style="color:var(--accent);font-size:14px;font-weight:700">${refName}</span>
-      &nbsp;|&nbsp; Score: <strong>${best.score}%</strong>
-      &nbsp;|&nbsp; TWIN: <strong style="color:${best.twin>=40?'var(--green)':best.twin>=20?'var(--accent)':'var(--yellow)'}">${best.twin}%</strong>
-      &nbsp;|&nbsp; ${bestCfg.periodicity||'?'}min &middot; ${bestCfg.graphType||'normal'} &middot; ${bestCfg.entriesDirection||'any'}
-    </div>`;
-  }
-
-  // Top 5 table
-  html += `<div style="margin-top:16px">
-    <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;margin-bottom:10px">Top 5 Candidatos</div>
-    <table class="diff-table"><thead><tr><th>#</th><th>Setup</th><th>Score</th><th>TWIN</th><th>TF</th><th>SL</th><th>SG</th><th>Horario</th><th>Indicadores</th></tr></thead><tbody>
-    ${topMatches.slice(0,5).map((r,i)=>{
-      const c=r.cfg||{};
-      const nm=(c.robot_name||r.name||'').replace(/_/g,' ').trim();
-      const tw=r.twin||0,lbl=twinLabel(tw);
-      const medal=i===0?'&#129351;':i===1?'&#129352;':i===2?'&#129353;':'';
-      const inds=[];
-      if(c.hilo)inds.push('HILO');if(c.rsi)inds.push('RSI');if(c.vwap)inds.push('VWAP');
-      if(c.bb)inds.push('BB');if(c.stoch)inds.push('STOCH');if(c.adx)inds.push('ADX');if(c.cma)inds.push('MA');
-      return `<tr>
-        <td>${medal} ${i+1}</td>
-        <td><strong>${nm}</strong><br><span style="font-size:10px;color:var(--text3)">#${c.robot_id||''}</span></td>
-        <td><strong style="color:var(--accent)">${r.score}%</strong></td>
-        <td><span style="font-weight:700;color:${lbl.color}">${tw}%</span> <span style="font-size:9px;color:${lbl.color}">${lbl.label}</span></td>
-        <td>${c.periodicity||'?'}m</td>
-        <td>${c.sl||'?'}pts</td>
-        <td>${c.sg||'?'}pts</td>
-        <td style="font-size:11px">${c.start_time||'?'} - ${c.end_time||'?'}</td>
-        <td style="font-size:11px">${inds.join(', ')||'—'}</td>
-      </tr>`;
-    }).join('')}
-    </tbody></table>
-  </div>`;
-
-  return html;
-}
 
 </script>
 </body>
