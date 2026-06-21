@@ -192,6 +192,15 @@ const TBT_DB={"10T39F_332766_170224_4191410":[[898,855,-1,-80],[892,870,1,110],[
 
 const DB_ENTRIES=Object.entries(DB);
 
+// Normalize any datetime string to "YYYY-MM-DD HH:MM:SS"
+function normalizeDT(s){
+  if(!s) return s;
+  // Match "DD/MM/YYYY / HH:MM:SS" or "DD/MM/YYYY HH:MM:SS"
+  const m=s.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s*\/\s*|\s+)(\d{2}:\d{2}:\d{2})/);
+  if(m) return `${m[3]}-${m[2]}-${m[1]} ${m[4]}`;
+  return s; // already YYYY-MM-DD or other
+}
+
 function extractFP(orders){
   const trades=[],hours=[],dates=new Set();
   for(const x of orders){
@@ -199,8 +208,9 @@ function extractFP(orders){
       const v=parseFloat(x.gross_profit);
       trades.push(v);
       try{
-        const dt=new Date(x.datetime.replace(' ','T'));
-        dates.add(x.datetime.slice(0,10));
+        const ndt=normalizeDT(x.datetime);
+        const dt=new Date(ndt.replace(' ','T'));
+        dates.add(ndt.slice(0,10));
         hours.push(dt.getHours()+dt.getMinutes()/60);
       }catch(e){}
     }
@@ -259,13 +269,13 @@ function tbtSimilarity(mysteryTrades, refName){
   if(!mysteryTrades||!refTrades||mysteryTrades.length<5||refTrades.length<5)
     return {twin:0,entry:0,close:0,score:0,n:0};
 
-  const epoch = new Date('2024-01-01');
+  const EPOCH_MS = Date.UTC(2024,0,1,12,0,0); // noon UTC — immune to timezone issues
   
   // Convert mystery trades to compact format
   const mByDay={};
   mysteryTrades.forEach(t=>{
-    const dt=new Date(t.date+'T00:00:00');
-    const dayOff=Math.round((dt-epoch)/(86400000));
+    const ms=new Date(t.date+'T12:00:00Z').getTime();
+    const dayOff=Math.round((ms-EPOCH_MS)/86400000);
     const bucket=Math.round(t.r/5)*5;
     const sign=t.r>0?1:-1;
     if(!mByDay[dayOff])mByDay[dayOff]=[];
@@ -299,13 +309,7 @@ function tbtSimilarity(mysteryTrades, refName){
       for(const rt of rDay){
         if(mt[1]===rt[1] && mt[2]===rt[2]){ entry++; matched=true; break; }
       }
-      if(matched) continue;
-      // Close: within 10 min, same sign, result within 15pts
-      for(const rt of rDay){
-        if(Math.abs(mt[1]-rt[1])<=10 && mt[2]===rt[2] && Math.abs(mt[3]-rt[3])<=15){
-          close++; break;
-        }
-      }
+            // CLOSE removed — only exact minute matches count
     }
   }
   const n=total||1;
@@ -324,8 +328,14 @@ function similarity(m,r){
 
 // Full score with TBT (called after raw trades available)
 function fullScore(statScore, tbt){
-  if(!tbt||tbt.n < 3) return statScore;
-  return Math.round((tbt.score*0.70 + (statScore/100)*0.30)*100);
+  // Sem dias comuns: penaliza (setup pode não ter operado no mesmo período)
+  if(!tbt || tbt.n === 0) return Math.round(statScore * 0.50);
+  const twin = tbt.twin; // 0.0 a 1.0 (fração de trades idênticos)
+  // Penalização progressiva pelo TBT Exato
+  if(twin < 0.05) return Math.round(statScore * 0.25); // <5% exato: -75%
+  if(twin < 0.15) return Math.round(statScore * 0.55); // <15%: -45%
+  if(twin < 0.30) return Math.round(statScore * 0.80); // <30%: -20%
+  return statScore; // ≥30% exato: mantém
 }
 
 function deduce(fp,top){
@@ -443,7 +453,7 @@ function renderDed(deds){
 
 function renderTable(ranks){
   return`<table class="results-table"><thead><tr>
-    <th>#</th><th>Setup</th><th>Score Final</th><th>TWIN</th><th>ENTRY</th><th>CLOSE</th><th>Stat</th><th>WR</th><th>PF</th><th>Tr/Dia</th><th>Indicadores</th><th>TF</th>
+    <th>#</th><th>Setup</th><th>Similaridade</th><th>TBT Exato</th><th>TBT Entrada</th><th>WR</th><th>PF</th><th>Payoff</th><th>Tr/Dia</th><th>Indicadores</th><th>TF</th>
   </tr></thead><tbody>
   ${ranks.slice(0,20).map((r,i)=>{
     const c=r.cfg||{};
@@ -460,13 +470,12 @@ function renderTable(ranks){
     return`<tr class="${i===0?'top-match':''}" onclick="expand(${i})" style="cursor:pointer">
       <td style="color:var(--text3);font-weight:600">${medal}${i>2?i+1:''}</td>
       <td><div style="font-weight:500">${nm}</div><div style="font-size:10px;color:var(--text3)">#${c.robot_id||''}</div></td>
-      <td><div class="score-bar"><div class="score-track"><div class="score-fill" style="width:${r.score}%"></div></div><div class="score-num">${r.score}%</div></div></td>
-      <td style="color:${r.twin>=60?'var(--green)':r.twin>=35?'var(--yellow)':'var(--text)'};font-weight:${r.twin>=35?'700':'400'}">${r.twin||0}%</td>
-      <td style="color:var(--text2)">${r.entry_m||0}%</td>
-      <td style="color:var(--text3)">${r.close||0}%</td>
-      <td style="color:var(--text3);font-size:11px">${r.stat||0}%</td>
+      <td><div class="score-bar"><div class="score-track"><div class="score-fill" style="width:${r.score}%;background:linear-gradient(90deg,var(--accent),var(--accent2))"></div></div><div class="score-num" style="color:var(--accent)">${r.score}%</div></div></td>
+      <td style="color:${(r.twin||0)>=40?'var(--green)':(r.twin||0)>=20?'var(--accent)':(r.twin||0)>=8?'var(--yellow)':'var(--text3)'};font-weight:${(r.twin||0)>=8?'700':'400'}">${r.tbt_n>0?(r.twin||0)+'%':'—'}</td>
+      <td style="color:var(--text2);font-size:12px">${r.tbt_n>0?((r.twin||0)+(r.entry_m||0))+'%':'—'}</td>
       <td style="color:${cWR(r.bt.win_rate)}">${pct(r.bt.win_rate)}</td>
       <td style="color:${cPF(r.bt.profit_factor)}">${p(r.bt.profit_factor)}</td>
+      <td>${p(r.bt.payoff)}</td>
       <td style="color:var(--cyan)">${p(r.bt.trades_per_day,1)}</td>
       <td>${inds.join('')||'<span style="color:var(--text3)">-</span>'}</td>
       <td><span class="pill pill-blue">${c.periodicity||'?'}m</span></td>
@@ -527,7 +536,10 @@ function expand(idx){
   ];
   dp.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div><strong style="font-size:15px">${nm}</strong> <span style="color:var(--text2);font-size:12px">&mdash; ${r.score}% similar</span></div>
+      <div><strong style="font-size:15px">${nm}</strong>
+        <span style="color:var(--text2);font-size:12px">&mdash; Similaridade: ${r.score}%</span>
+        ${r.tbt_n>0?`<span style="font-size:12px;margin-left:8px">| TBT Exato: <strong style="color:${(r.twin||0)>=40?'var(--green)':(r.twin||0)>=20?'var(--accent)':'var(--text2)'}">${r.twin||0}%</strong> | TBT Entrada: <strong>${(r.twin||0)+(r.entry_m||0)}%</strong> | ${r.tbt_n} dias comuns</span>`:''}
+      </div>
       <button class="btn btn-ghost" onclick="expand(${idx})">Fechar</button>
     </div>
     <div class="cfg-row">
@@ -650,7 +662,7 @@ function parseSmartTBotCSV(txt){
     // Build datetime string
     let dtStr='';
     if(iDatetime!==-1){
-      dtStr=row[iDatetime]||'';
+      dtStr=normalizeDT(row[iDatetime]||'');
     } else if(iDate!==-1){
       let d=row[iDate]||'';
       let t=iTime!==-1?(row[iTime]||'00:00:00'):'00:00:00';
@@ -685,8 +697,10 @@ function runAnalysis(orders, labelInfo){
     if(x.gross_profit!==null&&x.gross_profit!==undefined){
       const v=parseFloat(x.gross_profit);
       try{
-        const dt=new Date(x.datetime.replace(' ','T'));
-        rawTrades.push({r:v,date:x.datetime.slice(0,10),mins:dt.getHours()*60+dt.getMinutes(),dow:dt.getDay()});
+        const dtStr=normalizeDT(x.datetime);
+        const dt=new Date(dtStr.replace(' ','T'));
+        const dateOnly=dtStr.slice(0,10);
+        rawTrades.push({r:v,date:dateOnly,mins:dt.getHours()*60+dt.getMinutes(),dow:dt.getDay()});
       }catch(e){}
     }
   });
