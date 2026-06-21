@@ -88,6 +88,38 @@ section{margin-bottom:24px}
 .cfg-row strong{color:var(--text)}
 @media(max-width:1100px){.stats-row{grid-template-columns:repeat(3,1fr)}.grid-2{grid-template-columns:1fr}}
 @media(max-width:700px){.main{padding:16px}.compare-grid{grid-template-columns:repeat(2,1fr)}.stats-row{grid-template-columns:repeat(2,1fr)}}
+
+.diag-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px}
+.diag-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:18px}
+.diag-card-title{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text2);margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.diag-card-title::before{content:'';width:3px;height:12px;background:var(--accent2);border-radius:2px;flex-shrink:0}
+.diff-table{width:100%;border-collapse:collapse;font-size:12px}
+.diff-table th{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text3);padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);background:var(--bg3)}
+.diff-table td{padding:9px 10px;border-bottom:1px solid rgba(37,40,48,.4);vertical-align:top}
+.diff-table tr:hover td{background:rgba(0,0,0,.02)}
+.diff-ok{color:var(--green);font-weight:600}
+.diff-warn{color:var(--yellow);font-weight:600}
+.diff-bad{color:var(--red);font-weight:600}
+.rec-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;margin-left:6px}
+.rec-green{background:rgba(22,163,74,.12);color:var(--green)}
+.rec-yellow{background:rgba(217,119,6,.12);color:var(--yellow)}
+.rec-red{background:rgba(220,38,38,.12);color:var(--red)}
+.day-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:8px}
+.day-box{text-align:center;padding:8px 4px;border-radius:6px;font-size:11px;font-weight:600}
+.day-active{background:rgba(45,126,247,.12);color:var(--accent);border:1px solid rgba(45,126,247,.3)}
+.day-blocked{background:rgba(220,38,38,.08);color:var(--red);border:1px solid rgba(220,38,38,.2)}
+.hour-dist-mini{display:flex;align-items:flex-end;gap:1px;height:40px;margin-top:6px}
+.hour-dist-bar{flex:1;border-radius:1px 1px 0 0;min-height:1px}
+.alert-box{padding:14px 16px;border-radius:8px;margin-bottom:12px;font-size:12px;line-height:1.6}
+.alert-blue{background:rgba(45,126,247,.08);border:1px solid rgba(45,126,247,.25);color:var(--text)}
+.alert-yellow{background:rgba(217,119,6,.08);border:1px solid rgba(217,119,6,.25);color:var(--text)}
+.recon-table{width:100%;border-collapse:collapse;font-size:12px}
+.recon-table th{font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text3);padding:8px 12px;text-align:left;background:var(--bg3);border-bottom:1px solid var(--border)}
+.recon-table td{padding:9px 12px;border-bottom:1px solid rgba(37,40,48,.4)}
+.recon-table .param-name{font-weight:500;color:var(--text)}
+.recon-table .param-ref{color:var(--text2)}
+.recon-table .param-target{font-weight:700;color:var(--accent)}
+.recon-table .param-action{font-size:11px}
 </style>
 </head>
 <body>
@@ -145,6 +177,13 @@ section{margin-bottom:24px}
       </div>
       <div id="rankingView"></div>
     </section>
+
+    <!-- DIAGNOSTIC REPORT -->
+    <section id="diagSection" style="display:none">
+      <div class="section-title">&#128300; Relatorio de Diagnostico &mdash; Reconstrucao do Setup</div>
+      <div id="diagContent"></div>
+    </section>
+
   </div>
 </div>
 <script>
@@ -597,6 +636,452 @@ function processFile(file){
   };
   reader.readAsText(file,'utf-8');
 }
+
+
+// ============================================================
+// DIAGNOSTIC REPORT ENGINE
+// ============================================================
+
+function minsToHM(m){ return String(Math.floor(m/60)).padStart(2,'0')+':'+String(Math.round(m%60)).padStart(2,'0'); }
+
+function buildDiagReport(mystery, topMatches){
+  const top5 = topMatches.slice(0,5);
+  const best = topMatches[0];
+  const bestCfg = best.cfg || {};
+
+  // ---- 1. Compute mystery behavioral stats ----
+  const trades = mystery._trades || [];
+  const gains = trades.filter(t=>t.r>0);
+  const losses = trades.filter(t=>t.r<0);
+
+  // Day-of-week analysis
+  const DOW = ['Dom','Seg','Ter','Qua','Qui','Sex','Sab'];
+  const dowCount = new Array(7).fill(0);
+  trades.forEach(t=>{ if(t.dow!==undefined) dowCount[t.dow]++; });
+  const totalByDow = dowCount.reduce((a,b)=>a+b,0);
+
+  // Daily analysis
+  const byDate = {};
+  trades.forEach(t=>{
+    if(!byDate[t.date]) byDate[t.date]={trades:[],sum:0};
+    byDate[t.date].trades.push(t);
+    byDate[t.date].sum += t.r;
+  });
+  const days = Object.values(byDate);
+  const dailySums = days.map(d=>d.sum);
+  const dailyMax = Math.max(...dailySums);
+  const dailyMin = Math.min(...dailySums);
+  const dailyTrades = days.map(d=>d.trades.length);
+  const oneTradeDays = dailyTrades.filter(n=>n===1).length;
+
+  // First/last trade per day
+  const firstMins=[], lastMins=[];
+  Object.values(byDate).forEach(d=>{
+    const sorted = d.trades.slice().sort((a,b)=>a.mins-b.mins);
+    firstMins.push(sorted[0].mins);
+    lastMins.push(sorted[sorted.length-1].mins);
+  });
+  const avgFirst = firstMins.reduce((a,b)=>a+b,0)/firstMins.length;
+  const avgLast  = lastMins.reduce((a,b)=>a+b,0)/lastMins.length;
+  const maxLast  = Math.max(...lastMins);
+  const minLast  = Math.min(...lastMins);
+
+  // Partial gains (below 90% of modal)
+  const modalGain = mystery.modal_gain;
+  const partialGains = gains.filter(t=>t.r < modalGain * 0.92);
+  const partialPct = gains.length ? partialGains.length/gains.length : 0;
+
+  // Loss range
+  const lossVals = losses.map(t=>t.r);
+  const maxLoss = lossVals.length ? Math.min(...lossVals) : 0;
+  const minLoss = lossVals.length ? Math.max(...lossVals) : 0;
+
+  // Estimated SL from losses (mode of loss values)
+  const lossCounts = {};
+  lossVals.forEach(l=>{ const k=Math.round(l); lossCounts[k]=(lossCounts[k]||0)+1; });
+  const sortedLoss = Object.entries(lossCounts).sort((a,b)=>b[1]-a[1]);
+  const estSL = sortedLoss.length ? Math.abs(parseFloat(sortedLoss[0][0])) : 0;
+
+  // ---- 2. Compare vs best ref ----
+  const refCfg = bestCfg;
+  const refName = (refCfg.robot_name || best.name || '').replace(/_/g,' ').trim();
+
+  function diffClass(a,b,tol){ return Math.abs(a-b)<=tol?'diff-ok':Math.abs(a-b)<=tol*3?'diff-warn':'diff-bad'; }
+  function diffSymbol(a,b,tol){ return Math.abs(a-b)<=tol?'✓':Math.abs(a-b)<=tol*3?'~':'✗'; }
+
+  // ---- 3. DOW blocked days ----
+  const blockedDays = [];
+  DOW.forEach((d,i)=>{ if(i>=1&&i<=5&&dowCount[i]===0) blockedDays.push(d); });
+
+  // ---- 4. Estimate params ----
+  // Daily SG estimate: from max daily gain observed
+  const estDailySG = Math.round(dailyMax / 10) * 10;
+  // Daily SL estimate: from min daily loss (early stop days)
+  const oneTradeLossDays = days.filter(d=>d.trades.length===1&&d.sum<0);
+  const estDailySL = oneTradeLossDays.length ?
+    Math.round(Math.abs(oneTradeLossDays.map(d=>d.sum).reduce((a,b)=>a+b,0)/oneTradeLossDays.length / 10)) * 10 : null;
+
+  // Window end time: from last trades
+  const estEnd = minsToHM(maxLast + 14); // add one periodicity
+
+  // Partial gains suggest trailing stop or different SG
+  const hasTrailing = partialPct > 0.05;
+
+  // ---- BUILD HTML ----
+  let html = '';
+
+  // SUMMARY ALERT
+  html += `<div class="alert-box alert-blue">
+    <strong>&#127919; Setup mais provável:</strong> <span style="color:var(--accent);font-size:14px;font-weight:700">${refName}</span>
+    &nbsp;|&nbsp; Similaridade: <strong>${best.score}%</strong>
+    &nbsp;|&nbsp; Base: <span style="font-weight:600">${refCfg.periodicity||'?'}min · ${refCfg.graphType||'normal'} · ${refCfg.entriesDirection||'any'}</span>
+  </div>`;
+
+  if(partialPct > 0.05){
+    html += `<div class="alert-box alert-yellow">
+      &#9888; <strong>${(partialPct*100).toFixed(0)}% dos gains são parciais</strong> (abaixo de ${modalGain}pts) — 
+      o setup misterioso pode ter stop móvel, Daily SG diferente ou janela de horário que força saída antecipada.
+    </div>`;
+  }
+
+  html += `<div class="diag-grid">`;
+
+  // ---- CARD 1: METRICS COMPARISON ----
+  html += `<div class="diag-card">
+    <div class="diag-card-title">Comparação de Métricas</div>
+    <table class="diff-table">
+      <thead><tr><th>Métrica</th><th>Misterioso</th><th>${refName.split(' ').slice(0,3).join(' ')}</th><th>Δ</th></tr></thead>
+      <tbody>`;
+
+  const metricRows = [
+    {l:'Win Rate', mv:mystery.win_rate, rv:best.bt.win_rate, fmt:v=>(v*100).toFixed(1)+'%', tol:0.02},
+    {l:'Profit Factor', mv:mystery.profit_factor, rv:best.bt.profit_factor, fmt:v=>v.toFixed(3), tol:0.05},
+    {l:'Payoff', mv:mystery.payoff, rv:best.bt.payoff, fmt:v=>v.toFixed(3), tol:0.03},
+    {l:'Trades/Dia', mv:mystery.trades_per_day, rv:best.bt.trades_per_day, fmt:v=>v.toFixed(1), tol:0.5},
+    {l:'Hora Média', mv:mystery.avg_hour, rv:best.bt.avg_hour, fmt:v=>v.toFixed(1)+'h', tol:0.3},
+    {l:'Modal Gain', mv:Math.abs(mystery.modal_gain), rv:Math.abs(best.bt.modal_gain), fmt:v=>v+'pts', tol:2},
+    {l:'Modal Loss', mv:Math.abs(mystery.modal_loss), rv:Math.abs(best.bt.modal_loss), fmt:v=>v+'pts', tol:5},
+    {l:'Gain Uniformidade', mv:mystery.gain_uniformity, rv:best.bt.gain_uniformity, fmt:v=>(v*100).toFixed(1)+'%', tol:0.05},
+  ];
+
+  metricRows.forEach(row=>{
+    const cls = diffClass(row.mv, row.rv, row.tol);
+    const sym = diffSymbol(row.mv, row.rv, row.tol);
+    const delta = (row.mv - row.rv);
+    const deltaStr = (delta >= 0 ? '+' : '') + (Math.abs(delta) < 1 ? delta.toFixed(3) : delta.toFixed(1));
+    html += `<tr>
+      <td class="param-name">${row.l}</td>
+      <td><strong>${row.fmt(row.mv)}</strong></td>
+      <td class="param-ref">${row.fmt(row.rv)}</td>
+      <td class="${cls}">${sym} ${deltaStr}</td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>`;
+
+  // ---- CARD 2: HORÁRIOS ----
+  html += `<div class="diag-card">
+    <div class="diag-card-title">Análise de Horários</div>
+    <table class="diff-table">
+      <thead><tr><th>Métrica</th><th>Misterioso</th><th>Referência (cfg)</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Início configurado</td><td><strong>${minsToHM(avgFirst)}</strong> (avg 1º trade)</td><td class="param-ref">${refCfg.start_time||'?'}</td><td class="${diffClass(avgFirst, timeToMins(refCfg.start_time||'09:00:00'), 15)}">~</td></tr>
+        <tr><td>Fim (max último trade)</td><td><strong>${minsToHM(maxLast)}</strong></td><td class="param-ref">${refCfg.end_time||'?'}</td><td class="${maxLast > timeToMins(refCfg.end_time||'12:00:00')+15 ? 'diff-bad' : 'diff-ok'}">${maxLast > timeToMins(refCfg.end_time||'12:00:00')+15 ? '✗ Mais longo' : '✓ Similar'}</td></tr>
+        <tr><td>Fim estimado</td><td><strong>${estEnd}</strong></td><td class="param-ref">${refCfg.end_time||'?'}</td><td></td></tr>
+        <tr><td>Último trade avg</td><td><strong>${minsToHM(avgLast)}</strong></td><td class="param-ref">—</td><td></td></tr>
+        <tr><td>Dias c/ 1 trade</td><td><strong>${oneTradeDays}</strong></td><td class="param-ref">—</td><td class="${oneTradeDays>5?'diff-warn':'diff-ok'}">${oneTradeDays>8?'Daily SL ativo':'Normal'}</td></tr>
+      </tbody>
+    </table>
+    <div style="margin-top:14px">
+      <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;margin-bottom:8px">Dias da Semana Operados</div>
+      <div class="day-grid">
+        ${['Seg','Ter','Qua','Qui','Sex'].map((d,i)=>{
+          const cnt = dowCount[i+1];
+          const blocked = cnt===0;
+          return `<div class="day-box ${blocked?'day-blocked':'day-active'}">${d}<br><span style="font-size:10px;font-weight:400">${blocked?'BLOQ':cnt+'x'}</span></div>`;
+        }).join('')}
+      </div>
+    </div>
+  </div>`;
+
+  html += `</div>`; // close diag-grid
+
+  // ---- STOPS ANALYSIS ----
+  html += `<div class="diag-grid">`;
+
+  html += `<div class="diag-card">
+    <div class="diag-card-title">Análise de Stops</div>
+    <table class="diff-table">
+      <thead><tr><th>Stop</th><th>Misterioso (estimado)</th><th>Referência</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Stop Gain (SG)</td>
+          <td><strong>${modalGain}pts</strong> ${hasTrailing?'<span class="rec-yellow">+ parciais</span>':''}</td>
+          <td class="param-ref">${refCfg.sg||'?'}pts configurado</td>
+          <td class="${diffClass(modalGain, parseFloat(refCfg.sg||0)/5, 3)}">${Math.abs(modalGain - parseFloat(refCfg.sg||0)/5)<5?'✓':'~'}</td>
+        </tr>
+        <tr>
+          <td>Stop Loss (SL)</td>
+          <td><strong>~${estSL}pts</strong> resultado<br><span style="font-size:10px;color:var(--text3)">Max perda: ${Math.abs(maxLoss).toFixed(0)}pts</span></td>
+          <td class="param-ref">${refCfg.sl||'?'}pts configurado</td>
+          <td class="diff-warn">~ Analisar</td>
+        </tr>
+        <tr>
+          <td>Daily Stop Gain</td>
+          <td><strong>~R$${estDailySG}</strong><br><span style="font-size:10px;color:var(--text3)">Max diário: R$${dailyMax.toFixed(0)}</span></td>
+          <td class="param-ref">R$${refCfg.daily_sg||'?'}</td>
+          <td class="${diffClass(estDailySG, parseFloat(refCfg.daily_sg||0), 30)}">${Math.abs(estDailySG-parseFloat(refCfg.daily_sg||0))<40?'~ Próximo':'✗ Diferente'}</td>
+        </tr>
+        <tr>
+          <td>Daily Stop Loss</td>
+          <td><strong>${estDailySL?'~R$'+estDailySL:'Analisar'}</strong><br><span style="font-size:10px;color:var(--text3)">Min diário: R$${dailyMin.toFixed(0)}</span></td>
+          <td class="param-ref">R$${refCfg.daily_sl||'?'}</td>
+          <td class="diff-warn">~ Analisar</td>
+        </tr>
+        <tr>
+          <td>Gains parciais</td>
+          <td><strong>${partialGains.length}x</strong> (${(partialPct*100).toFixed(0)}%)</td>
+          <td class="param-ref">${best.bt.gain_uniformity>0.95?'Quase nenhum':'Sim'}</td>
+          <td class="${partialPct>0.1?'diff-warn':'diff-ok'}">${partialPct>0.1?'~ Investigar':'✓'}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>`;
+
+  // ---- RECONSTRUCTION TABLE ----
+  html += `<div class="diag-card">
+    <div class="diag-card-title">&#128295; Parâmetros para Replicar</div>
+    <table class="recon-table">
+      <thead><tr><th>Parâmetro</th><th>Referência</th><th>Estimado (Mystery)</th><th>Ação</th></tr></thead>
+      <tbody>`;
+
+  const reconRows = buildReconRows(mystery, best, refCfg, {
+    modalGain, estSL, estDailySG, estDailySL,
+    avgFirst, avgLast, maxLast, estEnd,
+    blockedDays, hasTrailing, partialPct, oneTradeDays
+  });
+
+  reconRows.forEach(r=>{
+    const badgeClass = r.status==='igual'?'rec-green':r.status==='ajustar'?'rec-yellow':'rec-red';
+    const badgeLabel = r.status==='igual'?'IGUAL':r.status==='ajustar'?'AJUSTAR':'DIFERENTE';
+    html += `<tr>
+      <td class="param-name">${r.param}</td>
+      <td class="param-ref">${r.ref}</td>
+      <td class="param-target">${r.target}</td>
+      <td class="param-action"><span class="rec-badge ${badgeClass}">${badgeLabel}</span> ${r.action}</td>
+    </tr>`;
+  });
+
+  html += `</tbody></table></div>`;
+  html += `</div>`; // close diag-grid
+
+  // ---- TOP 5 SIMILAR TABLE ----
+  html += `<div class="diag-card" style="margin-bottom:0">
+    <div class="diag-card-title">Top 5 Candidatos — Comparação Rápida</div>
+    <table class="diff-table">
+      <thead><tr><th>#</th><th>Setup</th><th>Score</th><th>WR</th><th>PF</th><th>Payoff</th><th>Tr/Dia</th><th>Hora</th><th>TF</th><th>Indicadores</th></tr></thead>
+      <tbody>
+        ${top5.map((r,i)=>{
+          const c=r.cfg||{};
+          const nm=(c.robot_name||r.name||'').replace(/_/g,' ').trim();
+          const inds=[];
+          if(c.hilo)inds.push('HILO');if(c.rsi)inds.push('RSI');if(c.vwap)inds.push('VWAP');
+          if(c.bb)inds.push('BB');if(c.stoch)inds.push('STOCH');if(c.adx)inds.push('ADX');
+          const medal=i===0?'&#129351;':i===1?'&#129352;':i===2?'&#129353;':'';
+          return `<tr>
+            <td>${medal} ${i+1}</td>
+            <td><strong>${nm}</strong><br><span style="font-size:10px;color:var(--text3)">#${c.robot_id||''}</span></td>
+            <td><strong style="color:var(--accent)">${r.score}%</strong></td>
+            <td>${(r.bt.win_rate*100).toFixed(1)}%</td>
+            <td>${r.bt.profit_factor.toFixed(2)}</td>
+            <td>${r.bt.payoff.toFixed(2)}</td>
+            <td>${r.bt.trades_per_day.toFixed(1)}</td>
+            <td>${r.bt.avg_hour.toFixed(1)}h</td>
+            <td><span class="pill pill-blue">${c.periodicity||'?'}m</span></td>
+            <td>${inds.map(i=>`<span class="pill pill-purple">${i}</span>`).join('')||'—'}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+
+  return html;
+}
+
+function timeToMins(timeStr){
+  if(!timeStr) return 0;
+  const parts = timeStr.split(':');
+  return parseInt(parts[0])*60 + parseInt(parts[1]||0);
+}
+
+function buildReconRows(mystery, best, cfg, extras){
+  const {modalGain, estSL, estDailySG, estDailySL, avgFirst, avgLast, maxLast,
+         estEnd, blockedDays, hasTrailing, partialPct, oneTradeDays} = extras;
+
+  const rows = [];
+  const p = mystery.trades_per_day;
+
+  // Periodicity
+  rows.push({
+    param: 'Periodicidade',
+    ref: (cfg.periodicity||'?')+'min',
+    target: (cfg.periodicity||'?')+'min',
+    status: 'igual',
+    action: 'Manter'
+  });
+
+  // Graph type
+  rows.push({
+    param: 'Tipo de gráfico',
+    ref: cfg.graphType||'normal',
+    target: cfg.graphType||'normal',
+    status: 'igual',
+    action: 'Manter'
+  });
+
+  // Entry direction
+  rows.push({
+    param: 'Direção',
+    ref: cfg.entriesDirection||'any',
+    target: cfg.entriesDirection||'any',
+    status: 'igual',
+    action: 'Manter'
+  });
+
+  // Indicators
+  const inds=[];
+  if(cfg.hilo)inds.push(`HILO(${cfg.hilo_periods||'?'})`);
+  if(cfg.rsi)inds.push(`RSI(${cfg.rsi_periods||'?'})`);
+  if(cfg.vwap)inds.push('VWAP');
+  if(cfg.bb)inds.push('BB');
+  if(cfg.stoch)inds.push('STOCH');
+  if(cfg.adx)inds.push('ADX');
+  rows.push({
+    param: 'Indicadores',
+    ref: inds.join(', ')||'—',
+    target: inds.join(', ')||'—',
+    status: 'igual',
+    action: 'Ponto de partida'
+  });
+
+  // SG
+  rows.push({
+    param: 'Stop Gain (SG)',
+    ref: (cfg.sg||'?')+'pts',
+    target: modalGain+'pts resultado',
+    status: hasTrailing ? 'ajustar' : 'igual',
+    action: hasTrailing ? 'Testar stop móvel ou SG menor' : 'Manter SG da referência'
+  });
+
+  // SL
+  const slRef = parseFloat(cfg.sl||0);
+  const slDiff = Math.abs(estSL - slRef/5);
+  rows.push({
+    param: 'Stop Loss (SL)',
+    ref: (cfg.sl||'?')+'pts config',
+    target: '~'+estSL+'pts resultado',
+    status: slDiff > 10 ? 'ajustar' : 'igual',
+    action: slDiff > 10 ? `Testar SL maior (~${Math.round(estSL*5/10)*10}pts)` : 'Manter'
+  });
+
+  // Daily SG
+  const dsgRef = parseFloat(cfg.daily_sg||0);
+  rows.push({
+    param: 'Daily Stop Gain',
+    ref: 'R$'+(cfg.daily_sg||'?'),
+    target: '~R$'+estDailySG,
+    status: Math.abs(estDailySG-dsgRef)>40 ? 'diferente' : 'ajustar',
+    action: estDailySG > dsgRef+30 ? `Aumentar para ~R$${estDailySG}` : 'Próximo, testar'
+  });
+
+  // Daily SL
+  const dslRef = parseFloat(cfg.daily_sl||0);
+  rows.push({
+    param: 'Daily Stop Loss',
+    ref: 'R$'+(cfg.daily_sl||'?'),
+    target: estDailySL ? '~R$'+estDailySL : 'Analisar',
+    status: estDailySL && Math.abs(estDailySL-dslRef)>30 ? 'ajustar' : 'igual',
+    action: oneTradeDays > 8 ? 'Daily SL ativo — ajustar valor' : 'Similar à referência'
+  });
+
+  // Start time
+  rows.push({
+    param: 'Horário início',
+    ref: cfg.start_time||'?',
+    target: '~'+minsToHM(Math.min(...[avgFirst].map(v=>v))),
+    status: 'igual',
+    action: 'Manter igual à referência'
+  });
+
+  // End time
+  const endRef = timeToMins(cfg.end_time||'12:00:00');
+  rows.push({
+    param: 'Horário fim',
+    ref: cfg.end_time||'?',
+    target: estEnd,
+    status: maxLast > endRef+15 ? 'diferente' : 'igual',
+    action: maxLast > endRef+15 ? `Estender para ${estEnd}` : 'Manter'
+  });
+
+  // Blocked days
+  if(blockedDays.length > 0){
+    rows.push({
+      param: 'Bloqueio por dia',
+      ref: 'Não configurado',
+      target: blockedDays.join(', ')+' bloqueado(s)',
+      status: 'diferente',
+      action: `Adicionar bloqueio: ${blockedDays.join(', ')}`
+    });
+  }
+
+  // Window blocks
+  rows.push({
+    param: 'Bloqueio de janela',
+    ref: `${cfg.start_time||'?'} – ${cfg.end_time||'?'}`,
+    target: 'Verificar operação contínua',
+    status: 'ajustar',
+    action: 'Comparar gaps no histórico do mystery'
+  });
+
+  return rows;
+}
+
+// ---- Enrich MFP with trade-level data when processing ----
+// Override runAnalysis to also store raw trades
+const _origRunAnalysis = runAnalysis;
+function runAnalysis(orders, labelInfo){
+  // Enrich MFP with raw trade data for diagnostic
+  _origRunAnalysis(orders, labelInfo);
+
+  // Build raw trades array for diagnostic
+  const rawTrades = [];
+  orders.forEach(x=>{
+    if(x.gross_profit!==null && x.gross_profit!==undefined){
+      const v = parseFloat(x.gross_profit);
+      try{
+        const dt = new Date(x.datetime.replace(' ','T'));
+        const dateStr = x.datetime.substring(0,10);
+        rawTrades.push({
+          r: v,
+          date: dateStr,
+          mins: dt.getHours()*60+dt.getMinutes(),
+          dow: dt.getDay(),
+        });
+      }catch(e){}
+    }
+  });
+  if(MFP) MFP._trades = rawTrades;
+
+  // Show diagnostic section and build report
+  setTimeout(()=>{
+    const diagSection = document.getElementById('diagSection');
+    const diagContent = document.getElementById('diagContent');
+    if(diagSection && diagContent && RANKS.length > 0 && MFP){
+      diagContent.innerHTML = buildDiagReport(MFP, RANKS);
+      diagSection.style.display = 'block';
+    }
+  }, 200);
+}
+
 
 const zone=document.getElementById('uploadZone');
 const inp=document.getElementById('fileInput');
