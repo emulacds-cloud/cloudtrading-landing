@@ -609,6 +609,30 @@ function runAnalysis(orders, labelInfo){
   renderDed(deduce(fp,RANKS));
   document.getElementById('rankingView').innerHTML=renderTable(RANKS);
   EXP=-1;
+
+  // Build raw trades for diagnostic
+  const rawTrades=[];
+  orders.forEach(x=>{
+    if(x.gross_profit!==null&&x.gross_profit!==undefined){
+      const v=parseFloat(x.gross_profit);
+      try{
+        const dt=new Date(x.datetime.replace(' ','T'));
+        rawTrades.push({r:v,date:x.datetime.slice(0,10),mins:dt.getHours()*60+dt.getMinutes(),dow:dt.getDay()});
+      }catch(e){}
+    }
+  });
+  if(MFP) MFP._trades=rawTrades;
+
+  // Show diagnostic report
+  setTimeout(()=>{
+    const diagSection=document.getElementById('diagSection');
+    const diagContent=document.getElementById('diagContent');
+    if(diagSection&&diagContent&&RANKS.length>0&&MFP&&MFP._trades){
+      try{ diagContent.innerHTML=buildDiagReport(MFP,RANKS); diagSection.style.display='block'; }
+      catch(e){ console.error('Diag error:',e); }
+    }
+  },250);
+
   setTimeout(()=>document.getElementById('resultsSection').scrollIntoView({behavior:'smooth'}),150);
 }
 
@@ -1043,43 +1067,6 @@ function buildReconRows(mystery, best, cfg, extras){
   });
 
   return rows;
-}
-
-// ---- Enrich MFP with trade-level data when processing ----
-// Override runAnalysis to also store raw trades
-const _origRunAnalysis = runAnalysis;
-function runAnalysis(orders, labelInfo){
-  // Enrich MFP with raw trade data for diagnostic
-  _origRunAnalysis(orders, labelInfo);
-
-  // Build raw trades array for diagnostic
-  const rawTrades = [];
-  orders.forEach(x=>{
-    if(x.gross_profit!==null && x.gross_profit!==undefined){
-      const v = parseFloat(x.gross_profit);
-      try{
-        const dt = new Date(x.datetime.replace(' ','T'));
-        const dateStr = x.datetime.substring(0,10);
-        rawTrades.push({
-          r: v,
-          date: dateStr,
-          mins: dt.getHours()*60+dt.getMinutes(),
-          dow: dt.getDay(),
-        });
-      }catch(e){}
-    }
-  });
-  if(MFP) MFP._trades = rawTrades;
-
-  // Show diagnostic section and build report
-  setTimeout(()=>{
-    const diagSection = document.getElementById('diagSection');
-    const diagContent = document.getElementById('diagContent');
-    if(diagSection && diagContent && RANKS.length > 0 && MFP){
-      diagContent.innerHTML = buildDiagReport(MFP, RANKS);
-      diagSection.style.display = 'block';
-    }
-  }, 200);
 }
 
 
