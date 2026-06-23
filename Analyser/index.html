@@ -682,19 +682,75 @@ function analyze(text,filename){
   // ── Detecção automática do timeframe pelo durationMed ──
   // durationMed = duração mediana dos trades em minutos
   // Isso revela o timeframe real do gráfico usado pelo robô
-  // Detecção automática de timeframe pela duração mediana dos trades
-  // Um trade de 1 min dura em média até 2x o TF (1-3min para TF=1min)
-  // Um trade de 5 min dura em média 5-15min, etc.
-  let detectedTF=1;
-  if(durationMed>=40)detectedTF=30;
-  else if(durationMed>=12)detectedTF=15;
-  else if(durationMed>=4)detectedTF=5;
-  else if(durationMed>=2)detectedTF=3;
-  else detectedTF=1;
+  // ── Detecção de timeframe pelo MENOR GAP ENTRE ENTRADAS CONSECUTIVAS ──
+  // O TF do gráfico define o "clock" do robô: quando o sinal pode aparecer.
+  // Se o robô lê barras de 1 min, pode entrar a qualquer minuto → gap mínimo = 1 min.
+  // Se lê barras de 20 min, só entra em múltiplos de 20 → gap mínimo = 20 min.
+  // Método: separar clusters (turnos), achar o menor gap DENTRO de cada cluster.
+  // Muito mais confiável que duração do trade (que depende do gain/loss configurado).
+
+  // 1. Coletar horários únicos de entrada em minutos do dia
+  const entryMins = trades.map(t => t.hour * 60 + t.minute);
+  const uniqueEntryMins = [...new Set(entryMins)].sort((a,b)=>a-b);
+
+  // 2. Separar em clusters (gap > 30 min = novo turno operacional)
+  const clusters = [];
+  let curCluster = [uniqueEntryMins[0]];
+  for(let i=1;i<uniqueEntryMins.length;i++){
+    if(uniqueEntryMins[i]-uniqueEntryMins[i-1]>30){
+      clusters.push([...curCluster]);
+      curCluster=[uniqueEntryMins[i]];
+    } else {
+      curCluster.push(uniqueEntryMins[i]);
+    }
+  }
+  clusters.push(curCluster);
+
+  // 3. Info de cada cluster para exibição
+  const clusterRanges = clusters.map(cl=>({
+    min:cl[0], max:cl[cl.length-1],
+    range:cl[cl.length-1]-cl[0],
+    n:trades.filter(t=>{const tm=t.hour*60+t.minute;return tm>=cl[0]&&tm<=cl[cl.length-1];}).length
+  }));
+
+  // 4. Menor gap entre TODAS as entradas consecutivas (antes de clusterizar)
+  const allConsecGaps=[];
+  for(let i=0;i<uniqueEntryMins.length-1;i++)
+    allConsecGaps.push(uniqueEntryMins[i+1]-uniqueEntryMins[i]);
+  const minAllGap=allConsecGaps.length>0?Math.min(...allConsecGaps):1;
+
+  // 5. Se o menor gap global > 30min → entradas espaçadas (TF=30 ou 60min)
+  //    O gap entre elas É o timeframe (não faz sentido clusterizar)
+  let minGap,detectedTF;
+  if(minAllGap>30){
+    minGap=minAllGap;
+  } else {
+    // Menor gap DENTRO de cada cluster
+    minGap=9999;
+    for(const cl of clusters){
+      for(let i=0;i<cl.length-1;i++){
+        const g=cl[i+1]-cl[i];
+        if(g<minGap) minGap=g;
+      }
+    }
+    if(minGap===9999) minGap=minAllGap;
+  }
+  const minRange=minGap;
+
+  // 6. Mapear menor gap → timeframe (tolerância de ±2 min para slippage/execução)
+  if(minGap<=1) detectedTF=1;
+  else if(minGap<=3) detectedTF=1;
+  else if(minGap<=7) detectedTF=5;
+  else if(minGap<=12) detectedTF=10;
+  else if(minGap<=17) detectedTF=15;
+  else if(minGap<=22) detectedTF=20;
+  else if(minGap<=32) detectedTF=30;
+  else if(minGap<=62) detectedTF=60;
+  else detectedTF=minGap;
 
   // Granularidade dos cortes = timeframe detectado
-  // Granularidade das pausas = 2x a granularidade dos cortes (blocos maiores)
-  const cutStep=detectedTF<=1?1:detectedTF<=3?3:detectedTF<=5?5:detectedTF<=15?10:15;
+  // Granularidade das pausas = 2x os cortes
+  const cutStep=detectedTF<=1?1:detectedTF<=5?5:detectedTF<=10?10:detectedTF<=20?20:detectedTF<=30?15:30;
   const pauseStep=cutStep*2;
 
   // ── Simulação de encerramento progressivo (granularidade do TF) ──
@@ -863,7 +919,7 @@ function analyze(text,filename){
     classif,classifDesc,score,
     costPerTrade,totalCost,netProfit,costPct,
     startDate:trades[0].date,endDate:trades[n-1].date,
-    detectedTF,cutStep,pauseStep,
+    detectedTF,cutStep,pauseStep,clusterRanges,minRange,
     totalProfitGross,totalCostAll,costPerTradeFmt,avgQty,
     avgPtsCapturado:trades.filter(t=>t.ptsCapturado>0).length?
       trades.filter(t=>t.ptsCapturado>0).reduce((a,t)=>a+t.ptsCapturado,0)/trades.filter(t=>t.ptsCapturado>0).length:0,
@@ -1026,7 +1082,11 @@ function renderHorarios(){
   document.getElementById('janLast').textContent=fmtTime(d.winMaxH,d.winMaxM);
   document.getElementById('janAlert').innerHTML=alertBox('a','ℹ️',`Janela operacional real: <strong>${fmtTime(d.winMinH,d.winMinM)} → ${fmtTime(d.winMaxH,d.winMaxM)}</strong>. Todos os testes respeitam essa faixa.`);
 
-  const tfLabel=d.detectedTF<=1?'1 minuto':d.detectedTF<=3?'3 minutos':d.detectedTF<=5?'5 minutos':d.detectedTF<=15?'15 minutos':'30 minutos';
+  const tfLabel=d.detectedTF<=1?'1 minuto':d.detectedTF<=5?'5 minutos':d.detectedTF<=10?'10 minutos':d.detectedTF<=15?'15 minutos':d.detectedTF<=20?'20 minutos':d.detectedTF<=30?'30 minutos':'60 minutos';
+  // Build cluster info string
+  const clusterInfo=d.clusterRanges&&d.clusterRanges.length>0
+    ?d.clusterRanges.map((c,i)=>`Turno ${i+1}: ${String(Math.floor(c.min/60)).padStart(2,'0')}:${String(c.min%60).padStart(2,'0')}→${String(Math.floor(c.max/60)).padStart(2,'0')}:${String(c.max%60).padStart(2,'0')} (range ${c.range}min, ${c.n} trades)`).join(' · ')
+    :'—';
   document.getElementById('janAlert').innerHTML+=alertBox('a','🔍',`<strong>Timeframe detectado: ${tfLabel}</strong> — duração mediana: ${d.durationMed} min. `+
     `Cortes de <strong>${d.cutStep} em ${d.cutStep} min</strong>. Pausas em blocos de <strong>${d.pauseStep} min</strong>.`);
 
@@ -1064,7 +1124,7 @@ function renderHorarios(){
   // Cutoff table
   const best=d.bestCut;
   document.getElementById('cutoffTable').innerHTML=
-    `<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Granularidade: ${d.cutStep} min · Timeframe detectado: ${tfLabel}</div>`+
+    `<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Granularidade: ${d.cutStep} min · TF: ${tfLabel} · Range menor turno: ${d.minRange} min</div>`+
     hrow(['Corte','Trades','Lucro','DD','Acerto'])+
     d.cutoffSims.map(s=>trow([
       s.label===best?.label?`<strong>${s.label}</strong>`:s.label,
@@ -1075,7 +1135,7 @@ function renderHorarios(){
     ])).join('');
   document.getElementById('cutoffAlert').innerHTML=best?
     alertBox('g','🎯',`<strong>Melhor corte: ${best.label}</strong> — ${best.n} trades, ${fmtR(best.profit)} de lucro, DD ${fmtR(best.dd)}, acerto ${pct(best.wr)}. `+
-      `(Testado de ${d.cutStep} em ${d.cutStep} min — timeframe detectado: ${tfLabel})`):'';
+      `(Testado de ${d.cutStep} em ${d.cutStep} min · TF detectado: ${tfLabel} · ${clusterInfo})`):'';
 
   // Pause table
   const sortedPauses=[...d.pauseSims].sort((a,b)=>b.profit-a.profit);
