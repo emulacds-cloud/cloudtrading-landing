@@ -1096,7 +1096,7 @@ function renderHorarios(){
   document.getElementById('janLast').textContent=fmtTime(d.winMaxH,d.winMaxM);
   document.getElementById('janAlert').innerHTML=alertBox('a','ℹ️',`Janela operacional real: <strong>${fmtTime(d.winMinH,d.winMinM)} → ${fmtTime(d.winMaxH,d.winMaxM)}</strong>. Todos os testes respeitam essa faixa.`);
 
-  const tfLabel=d.detectedTF<=1?'1 minuto':d.detectedTF<=5?'5 minutos':d.detectedTF<=10?'10 minutos':d.detectedTF<=15?'15 minutos':d.detectedTF<=20?'20 minutos':d.detectedTF<=30?'30 minutos':'60 minutos';
+  const tfLabel=`${d.detectedTF} minuto${d.detectedTF===1?'':'s'}`;
   // Build cluster info string
   const clusterInfo=d.clusterRanges&&d.clusterRanges.length>0
     ?d.clusterRanges.map((c,i)=>`Turno ${i+1}: ${String(Math.floor(c.min/60)).padStart(2,'0')}:${String(c.min%60).padStart(2,'0')}→${String(Math.floor(c.max/60)).padStart(2,'0')}:${String(c.max%60).padStart(2,'0')} (range ${c.range}min, ${c.n} trades)`).join(' · ')
