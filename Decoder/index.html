@@ -578,108 +578,77 @@ function toggleView(v){
 // Semicolon separated, quoted fields, only "saida" rows have Resultado (R$)
 // Columns vary but we look for: date/time cols + "Resultado" col
 function parseSmartTBotCSV(txt){
-  // Normalize line endings
-  const lines = txt.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').filter(l=>l.trim());
-  if(lines.length < 2) throw new Error('CSV vazio ou formato invalido');
-
-  // Detect separator (semicolon or comma)
-  const sep = lines[0].includes(';') ? ';' : ',';
-
-  // Parse a quoted CSV line
+  const lines=txt.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').filter(l=>l.trim());
+  if(lines.length<2)throw new Error('CSV vazio');
+  const sep=lines[0].includes(';')?';':',';
   function parseLine(line){
-    const fields=[];
-    let cur='', inQ=false;
-    for(let i=0;i<line.length;i++){
-      const c=line[i];
-      if(c==='"'){inQ=!inQ;}
-      else if(c===sep&&!inQ){fields.push(cur.trim());cur='';}
-      else cur+=c;
-    }
-    fields.push(cur.trim());
-    return fields;
+    const fields=[];let cur='',inQ=false;
+    for(let i=0;i<line.length;i++){const c=line[i];if(c==='"'){inQ=!inQ;}else if(c===sep&&!inQ){fields.push(cur.trim());cur='';}else cur+=c;}
+    fields.push(cur.trim());return fields;
   }
-
-  const headers = parseLine(lines[0]).map(h=>h.replace(/"/g,'').toLowerCase().trim());
-
-  // Find relevant column indices
-  // Date: "data", "date", or col containing DD/MM/YYYY
-  // Time: "hora", "time", "horario"
-  // Result: "resultado", "resultado (r$)", "lucro", "profit", "result"
-  // Type: "tipo", "type", "operacao" - to detect saida/entrada
-  // Datetime combined: some exports have single datetime col
-  
-  let iDate=-1, iTime=-1, iResult=-1, iType=-1, iDatetime=-1;
+  const headers=parseLine(lines[0]).map(h=>h.replace(/"/g,'').toLowerCase().trim());
+  let iDate=-1,iTime=-1,iResult=-1,iType=-1,iStatus=-1,iDatetime=-1;
   headers.forEach((h,i)=>{
-    if(/^data$|^date$/.test(h)) iDate=i;
-    else if(/^data\/hora$|^datetime$|^data hora$/.test(h)) iDatetime=i;
-    else if(/^hora$|^time$|^horario$/.test(h)) iTime=i;
-    else if(/resultado|lucro|profit|result/.test(h)) iResult=i;
-    else if(/^tipo$|^type$|^operacao$|opera/.test(h)) iType=i;
+    if(/^data\/hora$|^datetime$|^data hora$/.test(h))iDatetime=i;
+    else if(/^data$|^date$/.test(h))iDate=i;
+    else if(/^hora$|^time$|^horario$/.test(h))iTime=i;
+    else if(/resultado|lucro|profit|result/.test(h))iResult=i;
+    else if(/^tipo$|^type$|^operacao$|opera/.test(h))iType=i;
+    else if(/^status$/.test(h))iStatus=i;
   });
+  if(iResult===-1)headers.forEach((h,i)=>{if(h.includes('r$')||h.includes('rs'))iResult=i;});
+  if(iResult===-1)throw new Error('Coluna de resultado nao encontrada');
 
-  // If no explicit result col, try to find by position (SmartTBot: last numeric col in saida rows)
-  if(iResult===-1){
-    // Try finding col with R$ in header
-    headers.forEach((h,i)=>{if(h.includes('r$')||h.includes('rs'))iResult=i;});
-  }
-  if(iResult===-1) throw new Error('Coluna de resultado nao encontrada. Verifique se o CSV e do SmartTBot/ProfitChart.');
-
-  const orders=[];
-  let skipped=0;
-
+  // Parse all rows into structured objects
+  const allRows=[];
   for(let li=1;li<lines.length;li++){
     const row=parseLine(lines[li]).map(f=>f.replace(/"/g,'').trim());
     if(row.length<2||row.every(f=>!f))continue;
-
-    // Get result value
-    const rawResult=row[iResult]||'';
-    // Brazilian format: "1.234,56" or "1234,56" or "-234,56"
-    const cleaned=rawResult.replace(/\./g,'').replace(',','.');
-    const val=parseFloat(cleaned);
-
-    // Determine if this is a "saida" (exit) row
-    // If we have a type column: check for "saida", "s", "sell", "exit"
-    let isSaida=true; // default: treat all rows with numeric result as exits
-    if(iType!==-1){
-      const tipo=(row[iType]||'').toLowerCase();
-      // entrada = entry, saida = exit
-      isSaida = /sa[ií]da|exit|close|sell|s$/.test(tipo);
-      if(/entrada|entry|open|buy|compra|b$/.test(tipo)) isSaida=false;
-    }
-
-    // Only process rows with valid numeric result
-    if(isNaN(val)){
-      // Null result = entry row in some formats; push as null entry
-      let dtStr='';
-      if(iDatetime!==-1) dtStr=row[iDatetime]||'';
-      else if(iDate!==-1) dtStr=(row[iDate]||'')+' '+(iTime!==-1?row[iTime]:'00:00:00');
-      orders.push({datetime:dtStr,gross_profit:null});
-      continue;
-    }
-
-    if(!isSaida&&iType!==-1){skipped++;continue;} // skip entry rows
-
-    // Build datetime string
     let dtStr='';
     if(iDatetime!==-1){
       dtStr=normalizeDT(row[iDatetime]||'');
     } else if(iDate!==-1){
-      let d=row[iDate]||'';
-      let t=iTime!==-1?(row[iTime]||'00:00:00'):'00:00:00';
-      // Convert DD/MM/YYYY to YYYY-MM-DD
+      let d=row[iDate]||'',t=iTime!==-1?(row[iTime]||'00:00:00'):'00:00:00';
       const dm=d.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-      if(dm) d=`${dm[3].length===2?'20'+dm[3]:dm[3]}-${dm[2].padStart(2,'0')}-${dm[1].padStart(2,'0')}`;
-      // Strip seconds-separator artifacts like " / " in "DD/MM/YYYY / HH:MM:SS"
-      t=t.replace(/\s*\/\s*/,'').trim();
-      dtStr=`${d} ${t}`;
+      if(dm)d=`${dm[3].length===2?'20'+dm[3]:dm[3]}-${dm[2].padStart(2,'0')}-${dm[1].padStart(2,'0')}`;
+      t=t.replace(/\s*\/\s*/,'').trim();dtStr=`${d} ${t}`;
     }
-
-    orders.push({datetime:dtStr,gross_profit:String(val)});
+    const tipo=iType!==-1?(row[iType]||'').toLowerCase():'';
+    const status=iStatus!==-1?(row[iStatus]||'').toLowerCase():'executada';
+    const rawResult=row[iResult]||'';
+    const val=parseFloat(rawResult.replace(/\./g,'').replace(',','.'));
+    allRows.push({dtStr,tipo,status,val:isNaN(val)?null:val});
   }
 
-  if(orders.filter(o=>o.gross_profit!==null).length<5)
-    throw new Error(`Apenas ${orders.filter(o=>o.gross_profit!==null).length} trades encontrados. Verifique o formato do CSV.`);
+  // CSV is newest-first — reverse to chronological for correct entry+saida pairing
+  allRows.reverse();
 
+  const orders=[];
+  let lastEntryDt=null;
+
+  if(iType!==-1){
+    // Has tipo column — pair entrada+saida properly
+    for(const r of allRows){
+      const isEntrada=/entrada|entry|open|buy|compra/.test(r.tipo);
+      const isSaida=/sa.da|exit|close|sell/.test(r.tipo);
+      const isExecuted=r.status==='executada'||r.status==='';
+      if(isEntrada&&isExecuted&&r.dtStr){
+        lastEntryDt=r.dtStr;
+      }
+      if(isSaida&&isExecuted&&r.val!==null){
+        const entryDt=lastEntryDt||r.dtStr;
+        orders.push({datetime:entryDt,gross_profit:String(r.val)});
+        lastEntryDt=null;
+      }
+    }
+  } else {
+    // No tipo column — use all rows with numeric result (exit-only format)
+    for(const r of allRows){
+      if(r.val!==null) orders.push({datetime:r.dtStr,gross_profit:String(r.val)});
+    }
+  }
+
+  if(orders.length<5)throw new Error('Menos de 5 trades encontrados');
   return orders;
 }
 
@@ -757,8 +726,24 @@ function runAnalysis(orders, labelInfo){
     }
     RANKS.sort((a,b)=>b.score-a.score);
     renderDed(deduce(fp,RANKS));
-    document.getElementById('rankingView').innerHTML=renderTable(RANKS);
-    statusEl.textContent=statusEl.textContent.replace(' ⏳ Calculando TBT para 284 setups...', ' ✓ TBT concluído');
+
+    const maxTwin=Math.max(...RANKS.map(r=>r.twin||0));
+    if(maxTwin<5){
+      document.getElementById('rankingView').innerHTML=`
+        <div style="background:rgba(220,38,38,.07);border:1px solid rgba(220,38,38,.3);border-radius:10px;padding:32px;text-align:center">
+          <div style="font-size:28px;margin-bottom:12px">&#128269;</div>
+          <div style="font-size:16px;font-weight:700;color:var(--red);margin-bottom:8px">Nenhum setup similar encontrado</div>
+          <div style="font-size:13px;color:var(--text2);line-height:1.8">
+            TBT Exato máximo: <strong>${maxTwin}%</strong><br>
+            Nenhum setup do banco entrou no mesmo minuto.<br>
+            Este setup não pertence às famílias catalogadas nos 284 setups.
+          </div>
+        </div>`;
+      statusEl.textContent=statusEl.textContent.replace(' ⏳ Calculando TBT para 284 setups...',' ⚠ Sem match — TBT máx: '+maxTwin+'%');
+    } else {
+      document.getElementById('rankingView').innerHTML=renderTable(RANKS);
+      statusEl.textContent=statusEl.textContent.replace(' ⏳ Calculando TBT para 284 setups...',' ✓ TBT concluído — TBT máx: '+maxTwin+'%');
+    }
 
     // Show diagnostic
     const diagSection=document.getElementById('diagSection');
@@ -1212,92 +1197,4 @@ zone.addEventListener('dragleave',()=>zone.classList.remove('drag'));
 zone.addEventListener('drop',e=>{e.preventDefault();zone.classList.remove('drag');if(e.dataTransfer.files[0])processFile(e.dataTransfer.files[0]);});
 </script>
 </body>
-</html// ── CSV Parser ──────────────────────────────────────────────────
-function parseSmartTBotCSV(txt){
-  const lines=txt.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').filter(l=>l.trim());
-  if(lines.length<2)throw new Error('CSV vazio');
-  const sep=lines[0].includes(';')?';':',';
-  function parseLine(line){
-    const fields=[];let cur='',inQ=false;
-    for(let i=0;i<line.length;i++){const c=line[i];if(c==='"'){inQ=!inQ;}else if(c===sep&&!inQ){fields.push(cur.trim());cur='';}else cur+=c;}
-    fields.push(cur.trim());return fields;
-  }
-  const headers=parseLine(lines[0]).map(h=>h.replace(/"/g,'').toLowerCase().trim());
-  let iDate=-1,iTime=-1,iResult=-1,iType=-1,iStatus=-1,iDatetime=-1;
-  headers.forEach((h,i)=>{
-    if(/^data\/hora$|^datetime$/.test(h))iDatetime=i;
-    else if(/^data$|^date$/.test(h))iDate=i;
-    else if(/^hora$|^time$/.test(h))iTime=i;
-    else if(/resultado|lucro|profit|result/.test(h))iResult=i;
-    else if(/^tipo$|^type$|opera/.test(h))iType=i;
-    else if(/^status$/.test(h))iStatus=i;
-  });
-  if(iResult===-1)headers.forEach((h,i)=>{if(h.includes('r$')||h.includes('rs'))iResult=i;});
-  if(iResult===-1)throw new Error('Coluna de resultado nao encontrada');
-
-  // Parse all rows
-  const allRows=[];
-  for(let li=1;li<lines.length;li++){
-    const row=parseLine(lines[li]).map(f=>f.replace(/"/g,'').trim());
-    if(row.length<2||row.every(f=>!f))continue;
-    let dtStr='';
-    if(iDatetime!==-1){
-      dtStr=normalizeDT(row[iDatetime]||'');
-    } else if(iDate!==-1){
-      let d=row[iDate]||'',t=iTime!==-1?(row[iTime]||'00:00:00'):'00:00:00';
-      const dm=d.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-      if(dm)d=`${dm[3].length===2?'20'+dm[3]:dm[3]}-${dm[2].padStart(2,'0')}-${dm[1].padStart(2,'0')}`;
-      t=t.replace(/\s*\/\s*/,'').trim();dtStr=`${d} ${t}`;
-    }
-    const tipo=iType!==-1?(row[iType]||'').toLowerCase():'';
-    const status=iStatus!==-1?(row[iStatus]||'').toLowerCase():'executada';
-    const rawResult=row[iResult]||'';
-    const val=parseFloat(rawResult.replace(/\./g,'').replace(',','.'));
-    allRows.push({dtStr,tipo,status,val:isNaN(val)?null:val});
-  }
-
-  // Pair entrada+saída to get entry datetime with result
-  // CSV comes newest-first, reverse to chronological order
-  allRows.reverse();
-  const orders=[];
-  let lastEntryDt=null;
-
-  for(let i=0;i<allRows.length;i++){
-    const r=allRows[i];
-    const isEntrada=/entrada|entry|open|buy|compra/.test(r.tipo);
-    const isSaida=/sa.da|exit|close|sell/.test(r.tipo);
-    const isExecuted=r.status==='executada'||r.status==='';
-
-    if(isEntrada&&isExecuted&&r.dtStr){
-      lastEntryDt=r.dtStr; // remember last entry time
-    }
-
-    if(isSaida&&isExecuted&&r.val!==null){
-      // Use entry datetime if available, else fall back to exit datetime
-      const entryDt=lastEntryDt||r.dtStr;
-      orders.push({datetime:entryDt,gross_profit:String(r.val)});
-      lastEntryDt=null; // reset after pairing
-    }
-  }
-
-  // Fallback: if no tipo column, use all rows with numeric result
-  if(iType===-1){
-    orders.length=0;
-    lastEntryDt=null;
-    for(const r of allRows){
-      if(r.val!==null) orders.push({datetime:r.dtStr,gross_profit:String(r.val)});
-    }
-  }
-
-  if(orders.filter(o=>o.gross_profit!==null).length<5)
-    throw new Error('Menos de 5 trades encontrados');
-
-  // DEBUG entry times
-  const withResult = orders.filter(o=>o.gross_profit!==null);
-  console.log('Total trades:', withResult.length);
-  console.log('First 3 datetimes:', withResult.slice(0,3).map(o=>o.datetime));
-  console.log('Last 3 datetimes:', withResult.slice(-3).map(o=>o.datetime));
-  return orders;
-}
-
->
+</html>
