@@ -713,40 +713,54 @@ function analyze(text,filename){
     n:trades.filter(t=>{const tm=t.hour*60+t.minute;return tm>=cl[0]&&tm<=cl[cl.length-1];}).length
   }));
 
-  // 4. Menor gap entre TODAS as entradas consecutivas (antes de clusterizar)
+  // 4. Gaps entre TODAS as entradas consecutivas
   const allConsecGaps=[];
   for(let i=0;i<uniqueEntryMins.length-1;i++)
     allConsecGaps.push(uniqueEntryMins[i+1]-uniqueEntryMins[i]);
   const minAllGap=allConsecGaps.length>0?Math.min(...allConsecGaps):1;
 
-  // 5. Se o menor gap global > 30min → entradas espaçadas (TF=30 ou 60min)
-  //    O gap entre elas É o timeframe (não faz sentido clusterizar)
-  let minGap,detectedTF;
+  // 5. Se min gap global > 30min → entradas espaçadas, gap É o TF
+  let internalGaps=[], modeGap, minGap, detectedTF;
   if(minAllGap>30){
-    minGap=minAllGap;
+    modeGap=minAllGap; minGap=minAllGap;
   } else {
-    // Menor gap DENTRO de cada cluster
-    minGap=9999;
+    // Coletar gaps internos de cada cluster
     for(const cl of clusters){
-      for(let i=0;i<cl.length-1;i++){
-        const g=cl[i+1]-cl[i];
-        if(g<minGap) minGap=g;
-      }
+      for(let i=0;i<cl.length-1;i++) internalGaps.push(cl[i+1]-cl[i]);
     }
-    if(minGap===9999) minGap=minAllGap;
+    if(internalGaps.length===0){ internalGaps=[minAllGap]; }
+    minGap=Math.min(...internalGaps);
+    // Moda dos gaps (valor mais frequente = clock real do robô)
+    const gapFreq={};
+    for(const g of internalGaps) gapFreq[g]=(gapFreq[g]||0)+1;
+    modeGap=+Object.entries(gapFreq).sort((a,b)=>b[1]-a[1])[0][0];
   }
-  const minRange=minGap;
+  const minRange=modeGap;
 
-  // 6. Mapear menor gap → timeframe (tolerância de ±2 min para slippage/execução)
-  if(minGap<=1) detectedTF=1;
-  else if(minGap<=3) detectedTF=1;
-  else if(minGap<=7) detectedTF=5;
-  else if(minGap<=12) detectedTF=10;
-  else if(minGap<=17) detectedTF=15;
-  else if(minGap<=22) detectedTF=20;
-  else if(minGap<=32) detectedTF=30;
-  else if(minGap<=62) detectedTF=60;
-  else detectedTF=minGap;
+  // 6. Calcular desvio padrão dos gaps internos
+  //    Se consistente (std < 2 min) → usar o gap EXATO (sem arredondamento)
+  //    Se variável → arredondar para TF padrão mais próximo
+  let gapStd=0;
+  if(internalGaps.length>1){
+    const mean=internalGaps.reduce((a,b)=>a+b,0)/internalGaps.length;
+    gapStd=Math.sqrt(internalGaps.map(g=>(g-mean)**2).reduce((a,b)=>a+b,0)/internalGaps.length);
+  }
+
+  if(gapStd<2){
+    // Gap consistente → timeframe EXATO (ex: 14 min é 14 min, não 15)
+    detectedTF=modeGap;
+  } else {
+    // Gap variável → tolerância para TF padrão
+    if(minGap<=1) detectedTF=1;
+    else if(minGap<=3) detectedTF=1;
+    else if(minGap<=7) detectedTF=5;
+    else if(minGap<=12) detectedTF=10;
+    else if(minGap<=17) detectedTF=15;
+    else if(minGap<=22) detectedTF=20;
+    else if(minGap<=32) detectedTF=30;
+    else if(minGap<=62) detectedTF=60;
+    else detectedTF=minGap;
+  }
 
   // Granularidade dos cortes = timeframe detectado
   // Granularidade das pausas = 2x os cortes
