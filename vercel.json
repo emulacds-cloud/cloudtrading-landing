@@ -3,10 +3,6 @@
     {
       "source": "/decoder",
       "destination": "https://jovial-pithivier-f441db.netlify.app"
-    },
-    {
-      "source": "/decoder/:path*",
-      "destination": "https://jovial-pithivier-f441db.netlify.app/:path*"
     }
   ]
 }
