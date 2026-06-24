@@ -1,13 +1,12 @@
 {
-  "redirects": [
-    { "source": "/Decoder", "destination": "https://jovial-pithivier-f441db.netlify.app/", "permanent": false }
-  ],
-  "headers": [
+  "rewrites": [
     {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" }
-      ]
+      "source": "/Decoder",
+      "destination": "https://jovial-pithivier-f441db.netlify.app/"
+    },
+    {
+      "source": "/Decoder/:path*",
+      "destination": "https://jovial-pithivier-f441db.netlify.app/:path*"
     }
   ]
 }
