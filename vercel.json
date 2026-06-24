@@ -1,0 +1,14 @@
+{
+  "rewrites": [
+    { "source": "/Decoder", "destination": "https://jovial-pithivier-f441db.netlify.app/" },
+    { "source": "/Decoder/(.*)", "destination": "https://jovial-pithivier-f441db.netlify.app/$1" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    }
+  ]
+}
