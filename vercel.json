@@ -1,9 +1,13 @@
 {
- "rewrites": [
-   {
-     "source": "/decoder",
-     "destination": "https://jovial-pithivier-f441db.netlify.app/"
-   }
- ]
+  "redirects": [
+    { "source": "/Decoder", "destination": "https://dl.dropboxusercontent.com/scl/fi/a89zyznp2rxkeqkwzo1e3/setup-decoder.html?rlkey=iw0bz3pvao4m7i14smrggu8qz&st=2u6w5tus&dl=1", "permanent": false }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    }
+  ]
 }
-
