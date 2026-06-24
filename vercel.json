@@ -1,5 +1,5 @@
 {
-  "rewrites": [
+   [
     {
       "source": "/decoder",
       "destination": "https://jovial-pithivier-f441db.netlify.app"
