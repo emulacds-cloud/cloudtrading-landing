@@ -1,6 +1,6 @@
 {
   "redirects": [
-    { "source": "/Decoder", "destination": "https://dl.dropboxusercontent.com/scl/fi/a89zyznp2rxkeqkwzo1e3/setup-decoder.html?rlkey=iw0bz3pvao4m7i14smrggu8qz&st=2u6w5tus&dl=1", "permanent": false }
+    { "source": "/Decoder", "destination": "https://jovial-pithivier-f441db.netlify.app/", "permanent": false }
   ],
   "headers": [
     {
